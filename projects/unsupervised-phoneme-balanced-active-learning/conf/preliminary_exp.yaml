@@ -1,0 +1,6 @@
+hydra:
+  run:
+    dir: /home/shibutani/fs/ASR/projects/unsupervised-phoneme-balanced-active-learning/outputs/${now:%Y-%m-%d}/${now:%H-%M-%S}
+
+train: 
+  cuda: 0

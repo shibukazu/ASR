@@ -1,0 +1,8 @@
+hydra:
+  run:
+    dir: /home/shibutani/fs/ASR/projects/template/outputs/${now:%Y-%m-%d}/${now:%H-%M-%S}
+
+train:
+  cuda: 0
+  num_epoch: 5
+  num_batch: 2

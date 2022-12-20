@@ -1,0 +1,5 @@
+datasets==1.13.3
+transformers==4.11.3
+librosa
+jiwer
+pandas
