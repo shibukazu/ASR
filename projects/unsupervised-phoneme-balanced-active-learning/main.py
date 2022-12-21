@@ -6,15 +6,14 @@ from typing import Dict
 import hydra
 import mlflow
 import torch
-from omegaconf import DictConfig
-from rich.logging import RichHandler
-from torchmetrics.functional import char_error_rate, word_error_rate
-
 from conf import logging_conf
 from data import TIMITDatasetMelSpecdb, get_dataloader
 from model import Model
 from modules.decoders.ctc import greedy_decoder
 from modules.transformers.scheduler import TransformerLR
+from omegaconf import DictConfig
+from rich.logging import RichHandler
+from torchmetrics.functional import char_error_rate, word_error_rate
 from util.mlflow import log_params_from_omegaconf_dict
 
 CONF_NAME = "data_selection"
