@@ -305,7 +305,7 @@ class LibriSpeechDataset:
         self.resampling_rate = resampling_rate
 
         # trainかつvocabがない場合は作成
-        vocab_file_path = "librispeech.json"
+        vocab_file_path = "vocabs/librispeech.json"
         if split == "train":
             if not os.path.exists(vocab_file_path):
                 self.extract_vocab(vocab_file_path=vocab_file_path)
@@ -338,32 +338,28 @@ class LibriSpeechDataset:
         example = self.dataset[idx]
         audio = example[0].flatten()
         # "normalized_audio" is only for quantization
-        normalized_audio = self.feature_extractor(audio, sampling_rate=self.resampling_rate).input_values[0]
+        normalized_audio = torch.tensor(
+            self.feature_extractor(audio, sampling_rate=self.resampling_rate).input_values[0]
+        )
         mel_spec = self.mel_spec_converter(audio)
         mel_spec_db = self.amplitude_to_db(mel_spec)
         x = mel_spec_db.transpose(0, 1)
         x_len = torch.tensor(len(x))
         y = torch.tensor(self.tokenizer(example[2]).input_ids)
         y_len = torch.tensor(len(y))
-
-        return (
-            idx,
-            x,
-            x_len,
-            y,
-            y_len,
-            normalized_audio,
-        )
+        # "text" is only for check
+        text = example[2]
+        return (idx, x, x_len, y, y_len, normalized_audio, text)
 
     def collate_fn(self, batch):
-        bidx, bx, bx_len, by, by_len, baudio = zip(*batch)
+        bidx, bx, bx_len, by, by_len, baudio, btext = zip(*batch)
 
         bx = torch.nn.utils.rnn.pad_sequence(bx, batch_first=True, padding_value=0)
         bx_len = torch.tensor(bx_len)
         by = torch.nn.utils.rnn.pad_sequence(by, batch_first=True, padding_value=self.pad_token_id)
         by_len = torch.tensor(by_len)
 
-        return bidx, bx, bx_len, by, by_len, baudio
+        return bidx, bx, bx_len, by, by_len, baudio, btext
 
     def extract_vocab(self, vocab_file_path: str) -> None:
         print("create vocab...")
@@ -373,6 +369,7 @@ class LibriSpeechDataset:
 
         vocab = {v: k for k, v in enumerate(vocab_list)}
         # use | as delimeter in stead of " "
+        print(self.dataset[0])
         vocab["|"] = vocab[" "]
         # delete unused char
         del vocab[" "]

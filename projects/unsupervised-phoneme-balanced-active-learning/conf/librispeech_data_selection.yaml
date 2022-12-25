@@ -1,0 +1,38 @@
+hydra:
+  run:
+    dir: /home/shibutani/fs/ASR/projects/unsupervised-phoneme-balanced-active-learning/outputs/${now:%Y-%m-%d}/${now:%H-%M-%S}
+
+dataset: Librispeech
+
+selection:
+  type: "random"
+  ratio: 0.5
+
+model:
+  input_feature_size: 80
+  subsampling:
+    output_feature_size: 256
+    kernel1_size: 3
+    kernel2_size: 3
+    num_stride1: 2
+    num_stride2: 1 # T // 2
+  transformer:
+    num_layer: 12
+    num_head: 4
+    hidden_feature_size: 1024
+    dropout: 0.1
+
+train:
+  cuda: 0
+  num_batch: 16
+  num_accum_step: 8
+  num_epoch: 200
+  loss: "ctc"
+  optimize:
+    optimizer: "Adam"
+    lr: 0.01
+    beta1: 0.9
+    beta2: 0.98
+    eps: 0.000000001
+    warmup_steps: 8000
+
