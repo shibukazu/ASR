@@ -1,0 +1,31 @@
+experiment_name: "trial"
+
+hydra:
+  run:
+    dir: /home/shibutani/fs/ASR/projects/phoneme-balanced-finetune/outputs/${now:%Y-%m-%d}/${now:%H-%M-%S}
+
+dataset:
+  train: "librilight"
+  train_split: "10m"
+
+model:
+  spec_aug:
+    freq_mask_max_length: 64
+    num_freq_mask: 4
+    time_mask_max_length: 10
+    num_time_mask: 8
+
+train:
+  cuda: 0
+  num_batch: 4
+  num_accum_step: 1
+  num_epoch: 100
+  loss: "ctc"
+  optimize:
+    optimizer: "Adam"
+    lr: 0.1
+    beta1: 0.9
+    beta2: 0.98
+    eps: 0.000000001
+    warmup_steps: 25000
+

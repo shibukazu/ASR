@@ -18,3 +18,4 @@ private/
 **/cpts/**
 kaldi/
 espnet/
+trial_note.ipynb
