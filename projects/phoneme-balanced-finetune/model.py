@@ -38,6 +38,7 @@ class Model(torch.nn.Module):
         #   log_prob: [B, T, nlabel]
         #   y_lengths: [B]
         #       非パディング部分のシーケンス長
+        # TODO: with torch.no_grad()とすることで計算グラフの構築を抑制する
         x, x_lengths = self.feature_extractor(x, x_lengths)  # [B, T', D]
         if self.training:
             for i in range(x.shape[0]):
