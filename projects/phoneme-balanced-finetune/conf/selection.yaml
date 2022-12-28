@@ -1,17 +1,23 @@
+experiment_name: "trial"
+
 hydra:
   run:
     dir: /home/shibutani/fs/ASR/projects/phoneme-balanced-finetune/outputs/${now:%Y-%m-%d}/${now:%H-%M-%S}
 
 dataset:
   train: "librilight"
-  train_split: "10m"
+  train_split: "10h"
 
 model:
   spec_aug:
-    freq_mask_max_length: 30
-    num_freq_mask: 2
-    time_mask_max_length: 40
-    num_time_mask: 2
+    freq_mask_max_length: 64
+    num_freq_mask: 4
+    time_mask_max_length: 10
+    num_time_mask: 8
+
+selection:
+  type: "random"
+  limit_sec: 600
 
 train:
   cuda: 0
@@ -21,9 +27,9 @@ train:
   loss: "ctc"
   optimize:
     optimizer: "Adam"
-    lr: 0.0001
+    lr: 0.1
     beta1: 0.9
     beta2: 0.98
     eps: 0.000000001
-    warmup_steps: 8000
+    warmup_steps: 25000
 

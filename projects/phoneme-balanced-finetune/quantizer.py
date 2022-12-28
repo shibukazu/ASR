@@ -290,9 +290,9 @@ class MyWav2Vec2ForPreTraining(Wav2Vec2PreTrainedModel):
 
 
 class Quantizer:
-    def __init__(self, device):
+    def __init__(self, model_name: str, device):
         self.model = MyWav2Vec2ForPreTraining.from_pretrained(
-            "facebook/wav2vec2-base",
+            model_name,
             cache_dir="/home/shibutani/fs/.cache/huggingface/transformers").to(device)
         self.num_codevector_groups = self.model.config.num_codevector_groups
         self.num_codevectors_per_group = self.model.config.num_codevectors_per_group
