@@ -1,5 +1,4 @@
 import os
-import pickle
 from logging import config, getLogger
 
 import hydra
@@ -12,8 +11,9 @@ from model import Model
 from modules.decoders.ctc import greedy_decoder
 from modules.transformers.scheduler import TransformerLR
 from omegaconf import DictConfig
+from quantizer import Quantizer
 from rich.logging import RichHandler
-from sampler import DataKLSampler, RandomSampler, UniformKLSampler
+from sampler import RandomSampler, TestDataKLSampler, TrainDataKLSampler, UniformKLSampler
 from torchmetrics.functional import char_error_rate, word_error_rate
 from util.mlflow import log_params_from_omegaconf_dict
 
@@ -42,20 +42,46 @@ def main(cfg: DictConfig):
         vocab_file_path = f"./vocabs/{cfg.dataset.train}_{cfg.dataset.train_split}.json"
         train_dataset = LibriLightDataset(subset=cfg.dataset.train_split, vocab_file_path=vocab_file_path)
         logger.info(f"Train dataset size: {len(train_dataset)}")
-        with open("librilight_quantized_indices_memory.pkl", "rb") as f:
-            quantized_indices_memory = pickle.load(f)
-        assert len(quantized_indices_memory) == len(train_dataset)
+
+        test_dataset = LibriSpeechDataset(split=cfg.dataset.test_split, vocab_file_path=vocab_file_path)
+        logger.info(f"Test dataset size: {len(test_dataset)}")
+        test_dataloader = get_dataloader(
+            test_dataset, cfg.train.num_batch, shuffle=False, drop_last=False, collate_fn=test_dataset.collate_fn
+        )
+
+        # NOTE: 実験の正当性のために毎回Quantizeを行うものとする
+        quantizer = Quantizer(cfg.model.quantizer.name, DEVICE)
         limit_sec = float(cfg.selection.limit_sec)
         if cfg.selection.type == "random":
             sampler = RandomSampler(
-                quantized_indices_memory,
-                train_dataset,
+                quantizer=quantizer,
+                train_dataset=train_dataset,
+                test_dataset=test_dataset,
                 limit=limit_sec,
+                device=DEVICE,
             )
         elif cfg.selection.type == "uniform_kl":
-            sampler = UniformKLSampler(quantized_indices_memory, train_dataset, limit=limit_sec)
-        elif cfg.selection.type == "data_kl":
-            sampler = DataKLSampler(quantized_indices_memory, train_dataset, limit=limit_sec)
+            sampler = UniformKLSampler(
+                quantizer=quantizer,
+                dataset=train_dataset,
+                limit=limit_sec,
+                device=DEVICE,
+            )
+        elif cfg.selection.type == "train_data_kl":
+            sampler = TrainDataKLSampler(
+                quantizer=quantizer,
+                dataset=train_dataset,
+                limit=limit_sec,
+                device=DEVICE,
+            )
+        elif cfg.selection.type == "test_data_kl":
+            sampler = TestDataKLSampler(
+                quantizer=quantizer,
+                train_dataset=train_dataset,
+                test_dataset=test_dataset,
+                limit=limit_sec,
+                device=DEVICE,
+            )
         else:
             raise ValueError(f"Unknown selection type: {cfg.selection.type}")
         sampled_train_dataset = sampler.sample()
@@ -65,6 +91,10 @@ def main(cfg: DictConfig):
             total_duration += sampled_train_dataset[i][2] / 16000
         logger.info(f"Total duration of sampled dataset: {total_duration / 60:.2f} min")
 
+        # train datasetからサンプリングされたことを確認する（データリークの防止）
+        sampled_train_id = sampled_train_dataset[0][0]
+        assert train_dataset[sampled_train_id][5] == sampled_train_dataset[0][5]
+
         train_dataloader = get_dataloader(
             sampled_train_dataset,
             cfg.train.num_batch,
@@ -72,11 +102,7 @@ def main(cfg: DictConfig):
             drop_last=True,
             collate_fn=train_dataset.collate_fn,
         )
-        test_dataset = LibriSpeechDataset(split="test", vocab_file_path=vocab_file_path)
-        test_dataloader = get_dataloader(
-            test_dataset, cfg.train.num_batch, shuffle=False, drop_last=False, collate_fn=test_dataset.collate_fn
-        )
-
+        torch.cuda.empty_cache()
         num_label = len(train_dataset.vocab.keys())
         model = Model(nlabel=num_label, cfg=cfg).to(DEVICE)
         ctc_loss = torch.nn.CTCLoss(reduction="sum", blank=train_dataset.ctc_token_id)

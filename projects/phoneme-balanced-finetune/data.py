@@ -183,15 +183,15 @@ class LibriSpeechDataset:
     ):
         """
         split:
-        train, dev, test
+        train, dev-clean, test-clean
         """
         if split == "train":
             dataset_train_clean_100 = torchaudio.datasets.LIBRISPEECH(root, url="train-clean-100")
             self.dataset = dataset_train_clean_100
-        elif split == "dev":
+        elif split == "dev-clean":
             dataset_dev_clean = torchaudio.datasets.LIBRISPEECH(root, url="dev-clean")
             self.dataset = dataset_dev_clean
-        elif split == "test":
+        elif split == "test-clean":
             dataset_test_clean = torchaudio.datasets.LIBRISPEECH(root, url="test-clean")
             self.dataset = dataset_test_clean
         else:
