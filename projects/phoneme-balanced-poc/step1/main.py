@@ -1,19 +1,19 @@
-import os
+import json
+import pickle
 from logging import config, getLogger
 
 import hydra
 import mlflow
 import torch
 from conf import logging_conf
-from data import LibriLightDataset, LibriSpeechDataset, get_dataloader
+from data import LibriLightDataset, TEDLIUMRelease2Dataset, TEDLIUMRelease2SpecificTalkDataset, get_dataloader
 from hydra.core.hydra_config import HydraConfig
 from model import Model
 from modules.decoders.ctc import greedy_decoder
 from modules.transformers.scheduler import TransformerLR
 from omegaconf import DictConfig
-from quantizer import Quantizer
 from rich.logging import RichHandler
-from sampler import RandomSampler, TestDataMaxKLSampler, TestDataMinKLSampler, TrainDataKLSampler, UniformKLSampler
+from sampler import PhonemeKLSampler
 from torchmetrics.functional import char_error_rate, word_error_rate
 from util.mlflow import log_params_from_omegaconf_dict
 
@@ -39,81 +39,105 @@ def main(cfg: DictConfig):
 
         DEVICE = torch.device(f"cuda:{cfg.train.cuda}" if torch.cuda.is_available() else "cpu")
         logger.info(f"Training on {DEVICE}.")
-        vocab_file_path = f"./vocabs/{cfg.dataset.train}_{cfg.dataset.train_split}.json"
-        train_dataset = LibriLightDataset(subset=cfg.dataset.train_split, vocab_file_path=vocab_file_path)
-        logger.info(f"Train dataset size: {len(train_dataset)}")
+        # ---- Sampling -----
+        vocab_file_path = None
+        if cfg.dataset.sampling_pool.name == "libri-light":
+            vocab_file_path = f"./vocabs/{cfg.dataset.sampling_pool.name}_{cfg.dataset.sampling_pool.subset}.json"
+            sampling_pool = LibriLightDataset(
+                identifier_to_phones_file_path=cfg.dataset.sampling_pool.identifier_to_phones_file_path,
+                subset=cfg.dataset.sampling_pool.subset,
+                vocab_file_path=vocab_file_path,
+            )
+            train_collate_fn = sampling_pool.collate_fn
+            train_vocab = sampling_pool.vocab
+        else:
+            raise ValueError(f"Unknown sampling pool: {cfg.dataset.sampling_pool.name}")
+        logger.info(f"Sampling pool size: {len(sampling_pool)}")
 
-        test_dataset = LibriSpeechDataset(split=cfg.dataset.test_split, vocab_file_path=vocab_file_path)
-        logger.info(f"Test dataset size: {len(test_dataset)}")
-        test_dataloader = get_dataloader(
-            test_dataset, cfg.train.num_batch, shuffle=False, drop_last=False, collate_fn=test_dataset.collate_fn
-        )
+        if cfg.dataset.target.name == "libri-light":
+            target_dataset = LibriLightDataset(
+                identifier_to_phones_file_path=cfg.dataset.target.identifier_to_phones_file_path,
+                subset=cfg.dataset.target.subset,
+                vocab_file_path=vocab_file_path,
+            )
+        elif cfg.dataset.target.name == "tedlium2-difficult-600":
+            with open("tedlium2_difficult_600.pkl", "rb") as f:
+                target_dataset = pickle.load(f)
+        else:
+            raise ValueError(f"Unknown target dataset: {cfg.dataset.target.name}")
+        logger.info(f"Target dataset size: {len(target_dataset)}")
 
-        # NOTE: 実験の正当性のために毎回Quantizeを行うものとする
-        quantizer = Quantizer(cfg.model.quantizer.name, DEVICE)
-        limit_sec = float(cfg.selection.limit_sec)
-        if cfg.selection.type == "random":
-            sampler = RandomSampler(
-                quantizer=quantizer,
-                train_dataset=train_dataset,
-                test_dataset=test_dataset,
-                limit=limit_sec,
-                device=DEVICE,
+        with open(f"{cfg.dataset.phone_idx_map_name}.json", "r") as f:
+            phone_idx_map = json.load(f)
+        mlflow.log_artifact(f"{cfg.dataset.phone_idx_map_name}.json")
+        limit_duration_sec = float(cfg.selection.limit_duration_sec)
+
+        if cfg.selection.type == "max_kl":
+            sampler = PhonemeKLSampler(
+                sampling_pool=sampling_pool,
+                target_dataset=target_dataset,
+                limit_duration=limit_duration_sec,
+                is_max=True,
+                phone_to_idx=phone_idx_map,
             )
-        elif cfg.selection.type == "uniform_kl":
-            sampler = UniformKLSampler(
-                quantizer=quantizer,
-                dataset=train_dataset,
-                limit=limit_sec,
-                device=DEVICE,
-            )
-        elif cfg.selection.type == "train_data_kl":
-            sampler = TrainDataKLSampler(
-                quantizer=quantizer,
-                dataset=train_dataset,
-                limit=limit_sec,
-                device=DEVICE,
-            )
-        elif cfg.selection.type == "test_data_min_kl":
-            sampler = TestDataMinKLSampler(
-                quantizer=quantizer,
-                train_dataset=train_dataset,
-                test_dataset=test_dataset,
-                limit=limit_sec,
-                device=DEVICE,
-            )
-        elif cfg.selection.type == "test_data_max_kl":
-            sampler = TestDataMaxKLSampler(
-                quantizer=quantizer,
-                train_dataset=train_dataset,
-                test_dataset=test_dataset,
-                limit=limit_sec,
-                device=DEVICE,
+        elif cfg.selection.type == "min_kl":
+            sampler = PhonemeKLSampler(
+                sampling_pool=sampling_pool,
+                target_dataset=target_dataset,
+                limit_duration=limit_duration_sec,
+                is_max=False,
+                phone_to_idx=phone_idx_map,
             )
         else:
             raise ValueError(f"Unknown selection type: {cfg.selection.type}")
-        sampled_train_dataset = sampler.sample()
-        # show total duration of sampled dataset
+
+        train_dataset = sampler.sample()
+        # show total duration
         total_duration = 0
-        for i in range(len(sampled_train_dataset)):
-            total_duration += sampled_train_dataset[i][2] / 16000
+        for i in range(len(train_dataset)):
+            total_duration += train_dataset[i][2] / 16000
         logger.info(f"Total duration of sampled dataset: {total_duration / 60:.2f} min")
 
         # train datasetからサンプリングされたことを確認する（データリークの防止）
-        sampled_train_id = sampled_train_dataset[0][0]
-        assert train_dataset[sampled_train_id][5] == sampled_train_dataset[0][5]
+        sampled_train_id = train_dataset[0][0]
+        assert sampling_pool[sampled_train_id][5] == train_dataset[0][5]
 
         train_dataloader = get_dataloader(
-            sampled_train_dataset,
+            train_dataset,
             cfg.train.num_batch,
             shuffle=True,
             drop_last=True,
-            collate_fn=train_dataset.collate_fn,
+            collate_fn=train_collate_fn,
         )
+
+        if cfg.dataset.test.name == "libri-light":
+            test_dataset = LibriLightDataset(
+                identifier_to_phones_file_path=cfg.dataset.test.identifier_to_phones_file_path,
+                subset=cfg.dataset.test.subset,
+                vocab_file_path=vocab_file_path,
+            )
+            test_collate_fn = test_dataset.collate_fn
+            test_vocab = test_dataset.vocab
+        elif cfg.dataset.test.name == "tedlium2-difficult-600":
+            with open("tedlium2_difficult_600.pkl", "rb") as f:
+                test_dataset = pickle.load(f)
+            test_collate_fn = test_dataset.datasets[0].collate_fn
+            test_vocab = test_dataset.datasets[0].vocab
+        else:
+            raise ValueError(f"Unknown test dataset: {cfg.dataset.test.name}")
+        test_dataloader = get_dataloader(
+            test_dataset,
+            cfg.train.num_batch,
+            shuffle=False,
+            collate_fn=test_collate_fn,
+        )
+
+        assert train_vocab == test_vocab
+
         torch.cuda.empty_cache()
-        num_label = len(train_dataset.vocab.keys())
+        num_label = len(sampling_pool.vocab.keys())
         model = Model(nlabel=num_label, cfg=cfg).to(DEVICE)
-        ctc_loss = torch.nn.CTCLoss(reduction="sum", blank=train_dataset.ctc_token_id)
+        ctc_loss = torch.nn.CTCLoss(reduction="sum", blank=sampling_pool.ctc_token_id)
         optimizer = torch.optim.Adam(
             model.parameters(),
             lr=cfg.train.optimize.lr,
@@ -126,6 +150,9 @@ def main(cfg: DictConfig):
 
         NUM_EPOCH = cfg.train.num_epoch
         NUM_ACCUM_SEC = cfg.train.num_accum_sec
+
+        min_train_wer = 1.0
+
         for epoch in range(NUM_EPOCH):
             logger.info(f"Epoch {epoch + 1}/{NUM_EPOCH}")
             model.train()
@@ -134,11 +161,11 @@ def main(cfg: DictConfig):
             train_epoch_wer = 0
             train_cnt = 0
             accum_sec = 0.0
-            for i, (bidx, bx, bx_len, by, by_len, _, _, _, _) in enumerate(train_dataloader):
-                bx = bx.to(DEVICE)
-                bx_len = bx_len.to(DEVICE)
-                by = by.to(DEVICE)
-                by_len = by_len.to(DEVICE)
+            for i, batch in enumerate(train_dataloader):
+                bx = batch[1].to(DEVICE)
+                bx_len = batch[2].to(DEVICE)
+                by = batch[3].to(DEVICE)
+                by_len = batch[4].to(DEVICE)
                 log_probs, y_lengths = model(bx, bx_len)
                 loss = ctc_loss(log_probs.transpose(1, 0), by, y_lengths, by_len)
                 loss.backward()
@@ -155,8 +182,8 @@ def main(cfg: DictConfig):
 
                 # calculate CER
                 hypothesis = torch.argmax(log_probs, dim=-1)
-                hypotheses = greedy_decoder(hypothesis, train_dataset.vocab, "[PAD]", "|", "_")
-                answers = greedy_decoder(by, train_dataset.vocab, "[PAD]", "|", "_")
+                hypotheses = greedy_decoder(hypothesis, sampling_pool.vocab, "[PAD]", "|", "_")
+                answers = greedy_decoder(by, sampling_pool.vocab, "[PAD]", "|", "_")
                 train_epoch_cer += char_error_rate(hypotheses, answers)
                 train_epoch_wer += word_error_rate(hypotheses, answers)
 
@@ -165,6 +192,8 @@ def main(cfg: DictConfig):
             mlflow.log_metric("train_loss", train_epoch_loss / train_cnt, step=epoch)
             mlflow.log_metric("train_cer", train_epoch_cer / train_cnt, step=epoch)
             mlflow.log_metric("train_wer", train_epoch_wer / train_cnt, step=epoch)
+
+            min_train_wer = min(min_train_wer, train_epoch_wer / train_cnt)
 
             logger.info(f"Train Loss: {train_epoch_loss / train_cnt:.4f}")
             logger.info(f"Train CER: {train_epoch_cer / train_cnt:.4f}")
@@ -176,19 +205,19 @@ def main(cfg: DictConfig):
             test_epoch_wer = 0
             test_cnt = 0
             with torch.no_grad():
-                for i, (bidx, bx, bx_len, by, by_len, _) in enumerate(test_dataloader):
-                    bx = bx.to(DEVICE)
-                    bx_len = bx_len.to(DEVICE)
-                    by = by.to(DEVICE)
-                    by_len = by_len.to(DEVICE)
+                for i, batch in enumerate(test_dataloader):
+                    bx = batch[1].to(DEVICE)
+                    bx_len = batch[2].to(DEVICE)
+                    by = batch[3].to(DEVICE)
+                    by_len = batch[4].to(DEVICE)
                     log_probs, y_lengths = model(bx, bx_len)
                     loss = ctc_loss(log_probs.transpose(1, 0), by, y_lengths, by_len)
                     test_epoch_loss += loss.item() / bx.size(0)
 
                     # calculate CER
                     hypothesis = torch.argmax(log_probs, dim=-1)
-                    hypotheses = greedy_decoder(hypothesis, train_dataset.vocab, "[PAD]", "|", "_")
-                    answers = greedy_decoder(by, train_dataset.vocab, "[PAD]", "|", "_")
+                    hypotheses = greedy_decoder(hypothesis, sampling_pool.vocab, "[PAD]", "|", "_")
+                    answers = greedy_decoder(by, sampling_pool.vocab, "[PAD]", "|", "_")
                     test_epoch_cer += char_error_rate(hypotheses, answers)
                     test_epoch_wer += word_error_rate(hypotheses, answers)
 
@@ -202,11 +231,8 @@ def main(cfg: DictConfig):
             logger.info(f"Test CER: {test_epoch_cer / test_cnt:.4f}")
             logger.info(f"Test WER: {test_epoch_wer / test_cnt:.4f}")
 
-            # checkpoint_dir = f"cpts/{EXPERIMENT_NAME}/{mlflow_run.info.run_id}"
-            # os.makedirs(checkpoint_dir, exist_ok=True)
-            # torch.save(model.state_dict(), f"{checkpoint_dir}/epoch_{epoch}_{test_epoch_cer / test_cnt:.4f}.pth")
-            # mlflow.log_artifact(f"{checkpoint_dir}/epoch_{epoch}_{test_epoch_cer / test_cnt:.4f}.pth")
-        # mlflow.log_artifact(LOG_DIR)
+        if min_train_wer > 0.8:
+            raise Exception("Train WER is too high.")
 
 
 if __name__ == "__main__":

@@ -3,7 +3,115 @@ import torch
 from quantizer import Quantizer
 
 
-class TestDataKLSampler:
+class TestDataMaxKLSampler:
+    def __init__(
+        self,
+        quantizer: Quantizer,
+        train_dataset: torch.utils.data.Dataset,
+        test_dataset: torch.utils.data.Dataset,
+        limit: float,
+        device: torch.device,
+    ):
+        # train_dataset: 実際にサンプリングを行う対象
+        self.train_dataset = train_dataset
+        self.train_quantized_indices_memory = {}
+        for idx in range(len(train_dataset)):
+            # show progress
+            if idx % 100 == 0:
+                print(f"{idx / len(train_dataset) * 100:.2f}%")
+            audio = train_dataset[idx][1].unsqueeze(0).to(device)
+            quantized_indices = quantizer.quantize(audio)
+            self.train_quantized_indices_memory[idx] = quantized_indices[0].tolist()
+        assert len(self.train_quantized_indices_memory) == len(train_dataset)
+
+        # target dist計算用
+        self.test_dataset = test_dataset
+        self.test_quantized_indices_memory = {}
+        for idx in range(len(test_dataset)):
+            # show progress
+            if idx % 100 == 0:
+                print(f"{idx / len(test_dataset) * 100:.2f}%")
+            audio = test_dataset[idx][1].unsqueeze(0).to(device)
+            quantized_indices = quantizer.quantize(audio)
+            self.test_quantized_indices_memory[idx] = quantized_indices[0].tolist()
+        assert len(self.test_quantized_indices_memory) == len(test_dataset)
+
+        self.limit = limit
+        self.sampled_duration = 0.0
+        self.sampled_indices = set()
+        self.not_sampled_indices = set(range(len(train_dataset)))
+        self.sampled_quantized_idx_count = torch.zeros(320 * 320, dtype=torch.float32)
+
+        # test data全体の分布
+        target_quantized_idx_count = torch.zeros(320 * 320, dtype=torch.float32)
+        for idx in range(len(test_dataset)):
+            quantized_indices = torch.tensor(self.test_quantized_indices_memory[idx])
+            for quantized_idx in quantized_indices:
+                target_quantized_idx_count[quantized_idx] += 1
+        target_quantized_idx_count += 1e-8
+        self.target_distribution = target_quantized_idx_count / target_quantized_idx_count.sum()
+
+    def calculate_kl_divergence_between_target_and_empirical_distribution(self, sample):
+        """Calculate KL divergence between self.target_quantized_idx_count and empirical distribution.
+        Args:
+            sample (1D torch.Tensor): quantized indices tensor
+        Returns:
+            kl_divergence (float): KL divergence between self.target_quantized_idx_count and empirical distribution.
+        """
+        assert sample.ndim == 1
+        # update sampled_quantized_idx_count
+        sampled_quantized_idx_count_copy = self.sampled_quantized_idx_count.clone()
+        with torch.no_grad():
+            for quantized_idx in sample:
+                sampled_quantized_idx_count_copy[quantized_idx] += 1
+        # calculate KL divergence
+        sampled_quantized_idx_count_copy += 1e-8
+        empirical_distribution = sampled_quantized_idx_count_copy / sampled_quantized_idx_count_copy.sum()
+        kl_divergence = torch.sum(
+            empirical_distribution * torch.log(empirical_distribution / self.target_distribution)
+        )
+
+        if kl_divergence < 0:
+            raise ValueError("KL divergence must be positive.")
+        return kl_divergence
+
+    def sample(self):
+        # sample new samples based on KL divergence until the number of samples reaches the target number of samples
+        # return subset of train_dataset
+        while self.sampled_duration < self.limit:
+            # show progress
+            print(f"sampled {self.sampled_duration / self.limit * 100:.2f} %")
+            # calculate KL divergence for each not sampled indices
+            kl_divergences = {}
+            not_sampled_indices = list(self.not_sampled_indices)
+            for idx in not_sampled_indices:
+                quantized_indices = torch.tensor(self.train_quantized_indices_memory[idx])
+                kl_divergence = self.calculate_kl_divergence_between_target_and_empirical_distribution(
+                    quantized_indices
+                )
+                kl_divergences[idx] = kl_divergence
+            # select the index with the minimum KL divergence
+            max_kl_divergence_idx = max(kl_divergences.keys(), key=kl_divergences.get)
+            mlflow.log_metric(
+                "test_data_kl_divergence", kl_divergences[max_kl_divergence_idx], step=len(self.sampled_indices)
+            )
+            # calculate sample duration
+            duration = self.train_dataset[max_kl_divergence_idx][2].item() / 16000
+            self.sampled_duration += duration
+
+            # update sampled_indices and not_sampled_indices
+            self.sampled_indices.add(max_kl_divergence_idx)
+            self.not_sampled_indices.remove(max_kl_divergence_idx)
+            # update sampled_quantized_idx_count
+            quantized_indices = self.train_quantized_indices_memory[max_kl_divergence_idx]
+            for quantized_idx in quantized_indices:
+                self.sampled_quantized_idx_count[quantized_idx] += 1
+
+        # return subset of self.train_dataset
+        return torch.utils.data.Subset(self.train_dataset, list(self.sampled_indices))
+
+
+class TestDataMinKLSampler:
     def __init__(
         self,
         quantizer: Quantizer,
@@ -93,7 +201,7 @@ class TestDataKLSampler:
             # select the index with the minimum KL divergence
             min_kl_divergence_idx = min(kl_divergences.keys(), key=kl_divergences.get)
             mlflow.log_metric(
-                "min_test_data_kl_divergence", kl_divergences[min_kl_divergence_idx], step=len(self.sampled_indices)
+                "test_data_kl_divergence", kl_divergences[min_kl_divergence_idx], step=len(self.sampled_indices)
             )
             # calculate sample duration
             duration = self.train_dataset[min_kl_divergence_idx][2].item() / 16000

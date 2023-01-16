@@ -20,3 +20,6 @@ kaldi/
 espnet/
 trial_note.ipynb
 figs/
+text.phones.librispeech
+text.phones.tedlium2
+projects/phoneme-balanced-poc/step1/phones/*
