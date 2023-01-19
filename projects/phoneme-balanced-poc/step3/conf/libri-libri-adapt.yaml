@@ -1,0 +1,45 @@
+hydra:
+  run:
+    dir: /n/work3/shibutani/ASR/projects/phoneme-balanced-poc/step3/outputs/${now:%Y-%m-%d}/${now:%H-%M-%S}
+
+dataset:
+  sampling_pool:
+    name: "libri-light"
+    subset: "9h"
+    identifier_to_phones_file_path: "phones/librispeech_normalized_phones_no_bcl.json"
+  target:
+    name: "libri-light"
+    subset: "1h"
+    identifier_to_phones_file_path: "phones/librispeech_normalized_phones_no_bcl.json"
+  test:
+    name: "libri-light"
+    subset: "1h"
+    identifier_to_phones_file_path: "phones/librispeech_normalized_phones_no_bcl.json"
+  phone_to_idx_path: "phones/phone_to_idx.json"
+
+model:
+  spec_aug:
+    freq_mask_max_length: 64
+    num_freq_mask: 4
+    time_mask_max_length: 10
+    num_time_mask: 8
+
+selection:
+  type: "min_kl"
+  limit_duration_sec: 600
+  random:
+    kl_calculation_type: "trigram"
+
+train:
+  num_batch: 1
+  num_accum_sec: 60
+  num_epoch: 100
+  loss: "ctc"
+  optimize:
+    optimizer: "Adam"
+    lr: 0.1
+    beta1: 0.9
+    beta2: 0.98
+    eps: 0.000000001
+    warmup_steps: 25000
+
