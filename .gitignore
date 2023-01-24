@@ -23,3 +23,7 @@ figs/
 text.phones.librispeech
 text.phones.tedlium2
 projects/phoneme-balanced-poc/step1/phones/*
+librispeech_normalized_phones.json
+librispeech_normalized_phones_no_bcl.json
+ted2_normalized_phones.json
+ted2_normalized_phones_no_bcl.json

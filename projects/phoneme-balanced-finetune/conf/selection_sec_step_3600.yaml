@@ -5,20 +5,14 @@ hydra:
     dir: /home/shibutani/fs/ASR/projects/phoneme-balanced-finetune/outputs/${now:%Y-%m-%d}/${now:%H-%M-%S}
 
 dataset:
-  sampling_pool:
-    name: "libri-light"
-    subset: "9h"
-  target:
-    name: "libri-light"
-    subset: "1h"
-  test:
-    name: "libri-light"
-    subset: "1h"
-  phone_idx_map_name: "phone_idx_map"
+  train: "librilight"
+  train_split: "10h"
+  test: "librispeech"
+  test_split: "test-clean"
 
 model:
   quantizer:
-    name: "facebook/wav2vec2-base"
+    name: "facebook/wav2vec2-large-lv60"
   spec_aug:
     freq_mask_max_length: 64
     num_freq_mask: 4
@@ -27,12 +21,12 @@ model:
 
 selection:
   type: "random"
-  limit_duration_sec: 600
+  limit_sec: 3600
 
 train:
   cuda: 0
   num_batch: 1
-  num_accum_sec: 60
+  num_accum_sec: 360
   num_epoch: 100
   loss: "ctc"
   optimize:

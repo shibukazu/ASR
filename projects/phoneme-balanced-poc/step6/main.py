@@ -1,4 +1,3 @@
-import json
 import pickle
 from logging import config, getLogger
 
@@ -6,16 +5,18 @@ import hydra
 import mlflow
 import torch
 from conf import logging_conf
-from data import LibriLightDataset, TEDLIUMRelease2Dataset, TEDLIUMRelease2SpecificTalkDataset, get_dataloader
+from data import LibriLightDataset, get_dataloader
 from hydra.core.hydra_config import HydraConfig
 from model import Model
 from modules.decoders.ctc import greedy_decoder
 from modules.transformers.scheduler import TransformerLR
 from omegaconf import DictConfig
 from rich.logging import RichHandler
-from sampler import PhonemeKLSampler, RandomSampler
+from sampler import RandomSampler
 from torchmetrics.functional import char_error_rate, word_error_rate
 from util.mlflow import log_params_from_omegaconf_dict
+
+from utils import calculate_tf_idf_over_ds, cos_sim
 
 
 @hydra.main(version_base=None, config_path="conf", config_name=None)
@@ -40,70 +41,31 @@ def main(cfg: DictConfig):
         DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         logger.info(f"Training on {DEVICE}.")
         # ---- Sampling -----
-        vocab_file_path = None
-        if cfg.dataset.sampling_pool.name == "libri-light":
-            vocab_file_path = f"./vocabs/{cfg.dataset.sampling_pool.name}_{cfg.dataset.sampling_pool.subset}.json"
-            sampling_pool = LibriLightDataset(
-                identifier_to_phones_file_path=cfg.dataset.sampling_pool.identifier_to_phones_file_path,
-                subset=cfg.dataset.sampling_pool.subset,
-                vocab_file_path=vocab_file_path,
-            )
-            train_collate_fn = sampling_pool.collate_fn
-            train_vocab = sampling_pool.vocab
-        else:
-            raise ValueError(f"Unknown sampling pool: {cfg.dataset.sampling_pool.name}")
-        logger.info(f"Sampling pool size: {len(sampling_pool)}")
+        sampling_pool = LibriLightDataset(
+            subset="9h",
+            identifier_to_phones_file_path="phones/librispeech_normalized_phones_no_bcl.json",
+            vocab_file_path="vocabs/libri-light_9h.json",
+        )
+        train_collate_fn = sampling_pool.collate_fn
+        train_vocab = sampling_pool.vocab
+        if cfg.selection.type == "random":
+            limit_duration_sec = float(cfg.selection.limit_duration_sec)
 
-        if cfg.dataset.target.name == "libri-light":
-            target_dataset = LibriLightDataset(
-                identifier_to_phones_file_path=cfg.dataset.target.identifier_to_phones_file_path,
-                subset=cfg.dataset.target.subset,
-                vocab_file_path=vocab_file_path,
-            )
-        elif cfg.dataset.target.name == "tedlium2-difficult-600":
-            with open("tedlium2_difficult_600.pkl", "rb") as f:
-                target_dataset = pickle.load(f)
-        else:
-            raise ValueError(f"Unknown target dataset: {cfg.dataset.target.name}")
-        logger.info(f"Target dataset size: {len(target_dataset)}")
-
-        with open(f"{cfg.dataset.phone_to_idx_path}", "r") as f:
-            phone_idx_map = json.load(f)
-
-        limit_duration_sec = float(cfg.selection.limit_duration_sec)
-
-        if cfg.selection.type == "max_kl":
-            sampler = PhonemeKLSampler(
-                sampling_pool=sampling_pool,
-                target_dataset=target_dataset,
-                limit_duration=limit_duration_sec,
-                is_max=True,
-                phone_to_idx=phone_idx_map,
-            )
-        elif cfg.selection.type == "min_kl":
-            sampler = PhonemeKLSampler(
-                sampling_pool=sampling_pool,
-                target_dataset=target_dataset,
-                limit_duration=limit_duration_sec,
-                is_max=False,
-                phone_to_idx=phone_idx_map,
-            )
-        elif cfg.selection.type == "random":
             sampler = RandomSampler(
                 sampling_pool=sampling_pool,
                 limit_duration=limit_duration_sec,
             )
-        else:
-            raise ValueError(f"Unknown selection type: {cfg.selection.type}")
-
-        train_dataset = sampler.sample()
+            train_dataset = sampler.sample()
+        elif cfg.selection.type == "phone":
+            with open("max_sim_sampled_dataset.pkl", "rb") as f:
+                train_dataset = pickle.load(f)
         # show total duration
         total_duration = 0
         for i in range(len(train_dataset)):
             total_duration += train_dataset[i][2] / 16000
         logger.info(f"Total duration of sampled dataset: {total_duration / 60:.2f} min")
 
-        # train datasetからサンプリングされたことを確認する（データリークの防止）
+        # sampling_poolからサンプリングされたことを確認する（データリークの防止）
         sampled_train_id = train_dataset[0][0]
         assert sampling_pool[sampled_train_id][5] == train_dataset[0][5]
 
@@ -115,21 +77,14 @@ def main(cfg: DictConfig):
             collate_fn=train_collate_fn,
         )
 
-        if cfg.dataset.test.name == "libri-light":
-            test_dataset = LibriLightDataset(
-                identifier_to_phones_file_path=cfg.dataset.test.identifier_to_phones_file_path,
-                subset=cfg.dataset.test.subset,
-                vocab_file_path=vocab_file_path,
-            )
-            test_collate_fn = test_dataset.collate_fn
-            test_vocab = test_dataset.vocab
-        elif cfg.dataset.test.name == "tedlium2-difficult-600":
-            with open("tedlium2_difficult_600.pkl", "rb") as f:
-                test_dataset = pickle.load(f)
-            test_collate_fn = test_dataset.datasets[0].collate_fn
-            test_vocab = test_dataset.datasets[0].vocab
-        else:
-            raise ValueError(f"Unknown test dataset: {cfg.dataset.test.name}")
+        test_dataset = LibriLightDataset(
+            subset="1h",
+            identifier_to_phones_file_path="phones/librispeech_normalized_phones_no_bcl.json",
+            vocab_file_path="vocabs/libri-light_9h.json",
+        )
+        test_collate_fn = test_dataset.collate_fn
+        test_vocab = test_dataset.vocab
+
         test_dataloader = get_dataloader(
             test_dataset,
             cfg.train.num_batch,
@@ -138,6 +93,11 @@ def main(cfg: DictConfig):
         )
 
         assert train_vocab == test_vocab
+
+        train_tf_idf = calculate_tf_idf_over_ds(train_dataset)
+        test_tf_idf = calculate_tf_idf_over_ds(test_dataset)
+        similarity = cos_sim(train_tf_idf, test_tf_idf)
+        mlflow.log_metric("tf_idf_similarity", similarity)
 
         torch.cuda.empty_cache()
         num_label = len(sampling_pool.vocab.keys())

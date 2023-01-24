@@ -1,0 +1,28 @@
+hydra:
+  run:
+    dir: /n/work3/shibutani/ASR/projects/phoneme-balanced-poc/step3/outputs/${now:%Y-%m-%d}/${now:%H-%M-%S}
+
+model:
+  spec_aug:
+    freq_mask_max_length: 64
+    num_freq_mask: 4
+    time_mask_max_length: 10
+    num_time_mask: 8
+
+selection:
+  type: "random"
+  limit_duration_sec: 3800
+
+train:
+  num_batch: 1
+  num_accum_sec: 60
+  num_epoch: 30
+  loss: "ctc"
+  optimize:
+    optimizer: "Adam"
+    lr: 0.1
+    beta1: 0.9
+    beta2: 0.98
+    eps: 0.000000001
+    warmup_steps: 25000
+
