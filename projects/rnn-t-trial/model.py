@@ -8,25 +8,20 @@ class Model(torch.nn.Module):
     def __init__(
         self,
         encoder_input_size,
-        encoder_subsampled_input_size,
         encoder_hidden_size,
         encoder_num_layers,
-        encoder_output_size,
         vocab_size,
         embedding_size,
         predictor_hidden_size,
         predictor_num_layers,
-        predictor_output_size,
         jointnet_hidden_size,
         blank_idx,
     ):
         super().__init__()
         self.encoder = Encoder(
             input_size=encoder_input_size,
-            subsampled_input_size=encoder_subsampled_input_size,
             hidden_size=encoder_hidden_size,
             num_layers=encoder_num_layers,
-            output_size=encoder_output_size,
         )
 
         self.predictor = Predictor(
@@ -34,13 +29,12 @@ class Model(torch.nn.Module):
             embedding_size=embedding_size,
             hidden_size=predictor_hidden_size,
             num_layers=predictor_num_layers,
-            output_size=predictor_output_size,
             blank_idx=blank_idx,
         )
 
         self.jointnet = JointNet(
-            enc_out_size=encoder_output_size,
-            pred_out_size=predictor_output_size,
+            enc_hidden_size=encoder_hidden_size,
+            pred_hidden_size=predictor_hidden_size,
             hidden_size=jointnet_hidden_size,
             vocab_size=vocab_size,
         )

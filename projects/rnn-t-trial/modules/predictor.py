@@ -3,11 +3,10 @@ import torch
 
 class Predictor(torch.nn.Module):
     # input: (batch_size, seq_len) token idx sequence
-    def __init__(self, vocab_size, embedding_size, hidden_size, num_layers, output_size, blank_idx):
+    def __init__(self, vocab_size, embedding_size, hidden_size, num_layers, blank_idx):
         super().__init__()
         self.embedding = torch.nn.Embedding(vocab_size, embedding_size)
         self.lstm = torch.nn.LSTM(embedding_size, hidden_size, num_layers, batch_first=True)
-        self.fc = torch.nn.Linear(hidden_size, output_size)
 
         self.blank_idx = blank_idx
 
@@ -21,9 +20,9 @@ class Predictor(torch.nn.Module):
         packed_padded_embedding = torch.nn.utils.rnn.pack_padded_sequence(
             padded_embedding, input_lengths_prepended, batch_first=True, enforce_sorted=False
         )
+        self.lstm.flatten_parameters()
         packed_padded_output, hidden = self.lstm(packed_padded_embedding, hidden)
         padded_output, _ = torch.nn.utils.rnn.pad_packed_sequence(packed_padded_output, batch_first=True)
-        padded_output = self.fc(padded_output)  # [B, U+1, D]
 
         return padded_output, hidden
 
@@ -35,8 +34,8 @@ class Predictor(torch.nn.Module):
         packed_padded_embedding = torch.nn.utils.rnn.pack_padded_sequence(
             padded_embedding, input_lengths, batch_first=True, enforce_sorted=False
         )
+        self.lstm.flatten_parameters()
         packed_padded_output, hidden = self.lstm(packed_padded_embedding, hidden)
         padded_output, _ = torch.nn.utils.rnn.pad_packed_sequence(packed_padded_output, batch_first=True)
-        padded_output = self.fc(padded_output)  # [B, U+1, D]
 
         return padded_output, hidden

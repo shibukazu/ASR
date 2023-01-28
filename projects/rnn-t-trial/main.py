@@ -93,14 +93,11 @@ def main(cfg: DictConfig):
             vocab_size=vocab_size,
             blank_idx=blank_idx,
             encoder_input_size=cfg.model.encoder.input_size,
-            encoder_subsampled_input_size=cfg.model.encoder.subsampled_input_size,
             encoder_hidden_size=cfg.model.encoder.hidden_size,
             encoder_num_layers=cfg.model.encoder.num_layers,
-            encoder_output_size=cfg.model.encoder.output_size,
             embedding_size=cfg.model.predictor.embedding_size,
             predictor_hidden_size=cfg.model.predictor.hidden_size,
             predictor_num_layers=cfg.model.predictor.num_layers,
-            predictor_output_size=cfg.model.predictor.output_size,
             jointnet_hidden_size=cfg.model.jointnet.hidden_size,
         ).to(DEVICE)
         optimizer = torch.optim.Adam(model.parameters(), lr=cfg.train.lr, weight_decay=cfg.train.weight_decay)
@@ -138,12 +135,12 @@ def main(cfg: DictConfig):
                 )
                 epoch_train_loss += loss.item() / enc_input.shape[0]
 
-                # hyp_tokens = model.greedy_inference(enc_inputs=enc_input, enc_input_lengths=enc_input_lengths)
-                # ans_tokens = [pred_input[i, : pred_input_lengths[i]].tolist() for i in range(pred_input.shape[0])]
-                # hyp_texts = ["".join([idx_to_label[idx] for idx in hyp_token]) for hyp_token in hyp_tokens]
-                # ans_texts = ["".join([idx_to_label[idx] for idx in ans_token]) for ans_token in ans_tokens]
+                hyp_tokens = model.greedy_inference(enc_inputs=enc_input, enc_input_lengths=enc_input_lengths)
+                ans_tokens = [pred_input[i, : pred_input_lengths[i]].tolist() for i in range(pred_input.shape[0])]
+                hyp_texts = ["".join([idx_to_label[idx] for idx in hyp_token]) for hyp_token in hyp_tokens]
+                ans_texts = ["".join([idx_to_label[idx] for idx in ans_token]) for ans_token in ans_tokens]
 
-                # epoch_train_cer += char_error_rate(hyp_texts, ans_texts)
+                epoch_train_cer += char_error_rate(hyp_texts, ans_texts)
 
                 if accum_step % cfg.train.accum_step == 0:
                     loss.backward()
@@ -182,12 +179,12 @@ def main(cfg: DictConfig):
                     )
                     epoch_test_loss += loss.item() / enc_input.shape[0]
 
-                    # hyp_tokens = model.greedy_inference(enc_inputs=enc_input, enc_input_lengths=enc_input_lengths)
-                    # ans_tokens = [pred_input[i, : pred_input_lengths[i]].tolist() for i in range(pred_input.shape[0])]
-                    # hyp_texts = ["".join([idx_to_label[idx] for idx in hyp_token]) for hyp_token in hyp_tokens]
-                    # ans_texts = ["".join([idx_to_label[idx] for idx in ans_token]) for ans_token in ans_tokens]
+                    hyp_tokens = model.greedy_inference(enc_inputs=enc_input, enc_input_lengths=enc_input_lengths)
+                    ans_tokens = [pred_input[i, : pred_input_lengths[i]].tolist() for i in range(pred_input.shape[0])]
+                    hyp_texts = ["".join([idx_to_label[idx] for idx in hyp_token]) for hyp_token in hyp_tokens]
+                    ans_texts = ["".join([idx_to_label[idx] for idx in ans_token]) for ans_token in ans_tokens]
 
-                    # epoch_test_cer += char_error_rate(hyp_texts, ans_texts)
+                    epoch_test_cer += char_error_rate(hyp_texts, ans_texts)
 
                 mlflow.log_metric("test_loss", epoch_test_loss / cnt, step=i)
                 logger.info(f"Test loss: {epoch_test_loss / cnt}")

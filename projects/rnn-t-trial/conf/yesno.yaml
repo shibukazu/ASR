@@ -8,20 +8,17 @@ dataset:
 model:
   encoder:
     input_size: 40
-    subsampled_input_size: 32
     hidden_size: 64
     num_layers: 1
-    output_size: 64
   predictor:
     embedding_size: 64
     hidden_size: 64
     num_layers: 1
-    output_size: 64
   jointnet:
     hidden_size: 64
 
 train:
-  num_epoch: 100
+  num_epoch: 150
   num_batch: 2
   accum_step: 1
   lr: 0.0005
