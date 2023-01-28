@@ -11,7 +11,7 @@ from model import Model
 from omegaconf import DictConfig
 from rich.logging import RichHandler
 from torchaudio.functional import rnnt_loss
-from torchmetrics.functional import char_error_rate
+from torchmetrics.functional import char_error_rate, word_error_rate
 from util.mlflow import log_params_from_omegaconf_dict
 
 
@@ -60,8 +60,8 @@ def main(cfg: DictConfig):
                 drop_last=False,
             )
             blank_idx = dataset.blank_idx
-            vocab_size = len(dataset.label_to_idx)
-            idx_to_label = {v: k for k, v in dataset.label_to_idx.items()}
+            idx_to_token = dataset.idx_to_token
+            vocab_size = len(dataset.idx_to_token)
         elif cfg.dataset.name == "LibriLight":
             dataset = LibriLightDataset(
                 subset="1h",
@@ -104,43 +104,56 @@ def main(cfg: DictConfig):
         # scheduler = None
 
         NUM_EPOCH = cfg.train.num_epoch
+        min_train_wer = 1.0
         for i in range(1, NUM_EPOCH + 1):
             logger.info(f"Epoch {i} has started.")
+
+            model.train()
             epoch_train_loss = 0
             epoch_train_cer = 0
-            cnt = 0
+            epoch_train_wer = 0
             accum_step = 0
-            model.train()
-            for j, (enc_input, pred_input, enc_input_lengths, pred_input_lengths) in enumerate(train_dataloader):
+            for j, (benc_input, bpred_input, benc_input_length, bpred_input_length) in enumerate(train_dataloader):
                 optimizer.zero_grad()
-                cnt += 1
                 accum_step += 1
-                enc_input = enc_input.to(DEVICE)
-                pred_input = pred_input.to(DEVICE)
+                benc_input = benc_input.to(DEVICE)
+                bpred_input = bpred_input.to(DEVICE)
 
-                padded_output, subsampled_enc_input_lengths = model(
-                    padded_enc_input=enc_input,
-                    enc_input_lengths=enc_input_lengths,
-                    padded_pred_input=pred_input,
-                    pred_input_lengths=pred_input_lengths,
+                bpadded_output, bsubsampled_enc_input_length = model(
+                    padded_enc_input=benc_input,
+                    enc_input_lengths=benc_input_length,
+                    padded_pred_input=bpred_input,
+                    pred_input_lengths=bpred_input_length,
                 )
 
                 loss = rnnt_loss(
-                    logits=padded_output,
-                    targets=pred_input,
-                    logit_lengths=subsampled_enc_input_lengths.to(DEVICE),
-                    target_lengths=pred_input_lengths.to(DEVICE),
+                    logits=bpadded_output,
+                    targets=bpred_input,
+                    logit_lengths=bsubsampled_enc_input_length.to(DEVICE),
+                    target_lengths=bpred_input_length.to(DEVICE),
                     blank=blank_idx,
                     reduction="sum",
                 )
-                epoch_train_loss += loss.item() / enc_input.shape[0]
+                epoch_train_loss += loss.item()
 
-                hyp_tokens = model.greedy_inference(enc_inputs=enc_input, enc_input_lengths=enc_input_lengths)
-                ans_tokens = [pred_input[i, : pred_input_lengths[i]].tolist() for i in range(pred_input.shape[0])]
-                hyp_texts = ["".join([idx_to_label[idx] for idx in hyp_token]) for hyp_token in hyp_tokens]
-                ans_texts = ["".join([idx_to_label[idx] for idx in ans_token]) for ans_token in ans_tokens]
+                bhyp_token_indices = model.greedy_inference(
+                    enc_inputs=benc_input, enc_input_lengths=benc_input_length
+                )
+                bans_token_indices = [
+                    bpred_input[i, : bpred_input_length[i]].tolist() for i in range(bpred_input.shape[0])
+                ]
+                bhyp_text = [
+                    "".join([idx_to_token[idx] for idx in hyp_token_indices])
+                    for hyp_token_indices in bhyp_token_indices
+                ]
+                bans_text = [
+                    "".join([idx_to_token[idx] for idx in ans_token_indices])
+                    for ans_token_indices in bans_token_indices
+                ]
 
-                epoch_train_cer += char_error_rate(hyp_texts, ans_texts)
+                # char_error_rate and word_error_rate are automatically reduced by average
+                epoch_train_cer += char_error_rate(bhyp_text, bans_text) * benc_input.shape[0]
+                epoch_train_wer += word_error_rate(bhyp_text, bans_text) * benc_input.shape[0]
 
                 if accum_step % cfg.train.accum_step == 0:
                     loss.backward()
@@ -148,55 +161,77 @@ def main(cfg: DictConfig):
                     accum_step = 0
 
             logger.info(f"Epoch {i} has finished.")
-            logger.info(f"Train loss: {epoch_train_loss / cnt}")
-            mlflow.log_metric("train_loss", epoch_train_loss / cnt, step=i)
-            logger.info(f"Train CER: {epoch_train_cer / cnt}")
-            mlflow.log_metric("train_cer", epoch_train_cer / cnt, step=i)
+            logger.info(f"Train loss: {epoch_train_loss / len(train_dataset)}")
+            mlflow.log_metric("train_loss", epoch_train_loss / len(train_dataset), step=i)
+            logger.info(f"Train CER: {epoch_train_cer / len(train_dataset)}")
+            mlflow.log_metric("train_cer", epoch_train_cer / len(train_dataset), step=i)
+            logger.info(f"Train WER: {epoch_train_wer / len(train_dataset)}")
+            mlflow.log_metric("train_wer", epoch_train_wer / len(train_dataset), step=i)
+
+            min_train_wer = min(min_train_wer, epoch_train_wer / len(train_dataset))
 
             model.eval()
             epoch_test_loss = 0
             epoch_test_cer = 0
-            cnt = 0
+            epoch_test_wer = 0
             with torch.no_grad():
-                for j, (enc_input, pred_input, enc_input_lengths, pred_input_lengths) in enumerate(test_dataloader):
-                    cnt += 1
-                    enc_input = enc_input.to(DEVICE)
-                    pred_input = pred_input.to(DEVICE)
+                for j, (benc_input, bpred_input, benc_input_length, bpred_input_length) in enumerate(
+                    test_dataloader
+                ):
+                    benc_input = benc_input.to(DEVICE)
+                    bpred_input = bpred_input.to(DEVICE)
 
-                    padded_output, subsampled_enc_input_lengths = model(
-                        padded_enc_input=enc_input,
-                        enc_input_lengths=enc_input_lengths,
-                        padded_pred_input=pred_input,
-                        pred_input_lengths=pred_input_lengths,
+                    bpadded_output, bsubsampled_enc_input_length = model(
+                        padded_enc_input=benc_input,
+                        enc_input_lengths=benc_input_length,
+                        padded_pred_input=bpred_input,
+                        pred_input_lengths=bpred_input_length,
                     )
                     loss = rnnt_loss(
-                        logits=padded_output,
-                        targets=pred_input,
-                        logit_lengths=subsampled_enc_input_lengths.to(DEVICE),
-                        target_lengths=pred_input_lengths.to(DEVICE),
+                        logits=bpadded_output,
+                        targets=bpred_input,
+                        logit_lengths=bsubsampled_enc_input_length.to(DEVICE),
+                        target_lengths=bpred_input_length.to(DEVICE),
                         blank=blank_idx,
                         reduction="sum",
                     )
-                    epoch_test_loss += loss.item() / enc_input.shape[0]
+                    epoch_test_loss += loss.item()
 
-                    hyp_tokens = model.greedy_inference(enc_inputs=enc_input, enc_input_lengths=enc_input_lengths)
-                    ans_tokens = [pred_input[i, : pred_input_lengths[i]].tolist() for i in range(pred_input.shape[0])]
-                    hyp_texts = ["".join([idx_to_label[idx] for idx in hyp_token]) for hyp_token in hyp_tokens]
-                    ans_texts = ["".join([idx_to_label[idx] for idx in ans_token]) for ans_token in ans_tokens]
+                    bhyp_token_indices = model.greedy_inference(
+                        enc_inputs=benc_input, enc_input_lengths=benc_input_length
+                    )
+                    bans_token_indices = [
+                        bpred_input[i, : bpred_input_length[i]].tolist() for i in range(bpred_input.shape[0])
+                    ]
+                    bhyp_text = [
+                        "".join([idx_to_token[idx] for idx in hyp_token_indices])
+                        for hyp_token_indices in bhyp_token_indices
+                    ]
+                    bans_text = [
+                        "".join([idx_to_token[idx] for idx in ans_token_indices])
+                        for ans_token_indices in bans_token_indices
+                    ]
 
-                    epoch_test_cer += char_error_rate(hyp_texts, ans_texts)
+                    epoch_test_cer += char_error_rate(bhyp_text, bans_text) * benc_input.shape[0]
+                    epoch_test_wer += word_error_rate(bhyp_text, bans_text) * benc_input.shape[0]
 
-                mlflow.log_metric("test_loss", epoch_test_loss / cnt, step=i)
-                logger.info(f"Test loss: {epoch_test_loss / cnt}")
-                mlflow.log_metric("test_cer", epoch_test_cer / cnt, step=i)
-                logger.info(f"Test CER: {epoch_test_cer / cnt}")
+                mlflow.log_metric("test_loss", epoch_test_loss / len(test_dataset), step=i)
+                logger.info(f"Test loss: {epoch_test_loss / len(test_dataset)}")
+                mlflow.log_metric("test_cer", epoch_test_cer / len(test_dataset), step=i)
+                logger.info(f"Test CER: {epoch_test_cer / len(test_dataset)}")
+                mlflow.log_metric("test_wer", epoch_test_wer / len(test_dataset), step=i)
+                logger.info(f"Test WER: {epoch_test_wer / len(test_dataset)}")
 
-        torch.save(
-            {
-                "model_state_dict": model.state_dict(),
-            },
-            os.path.join(f"model_{cfg.dataset.name}.pth"),
-        )
+        if min_train_wer > 0.8:
+            # learning failed
+            exit(1)
+        else:
+            torch.save(
+                {
+                    "model_state_dict": model.state_dict(),
+                },
+                os.path.join(f"model_{cfg.dataset.name}.pth"),
+            )
 
 
 if __name__ == "__main__":

@@ -18,23 +18,22 @@ class YesNoDataset(torch.utils.data.Dataset):
 
         dataset = []
         columns = ["path", "text_idx"]
-        self.labels = ["_", "y", "e", "s", "n", "o", "<space>"]
-        self.label_to_idx = {label: i for i, label in enumerate(self.labels)}
-        self.blank_idx = self.label_to_idx["_"]
-        # pad_idx should be 0 when use rnnt_loss
-        # self.pad_idx = self.label_to_idx["<pad>"]
-        self.pad_idx = self.blank_idx
-        assert self.blank_idx == 0
+        self.tokens = ["y", "e", "s", "n", "o", " ", "<pad>", "<blank>"]
+        self.token_to_idx = {label: i for i, label in enumerate(self.tokens)}
+        self.idx_to_token = {i: label for i, label in enumerate(self.tokens)}
+        self.blank_idx = self.token_to_idx["<blank>"]
+        self.pad_idx = self.token_to_idx["<pad>"]
+
         for wav_file_path in glob.glob(wav_dir_path + "*.wav"):
             file_name = os.path.splitext(os.path.basename(wav_file_path))[0]
             text_idx = []
             for c in file_name:
                 if c == "1":
-                    text_idx += [self.label_to_idx[ic] for ic in "yes"]
+                    text_idx += [self.token_to_idx[ic] for ic in "yes"]
                 elif c == "0":
-                    text_idx += [self.label_to_idx[ic] for ic in "no"]
+                    text_idx += [self.token_to_idx[ic] for ic in "no"]
                 elif c == "_":
-                    text_idx.append(self.label_to_idx["<space>"])
+                    text_idx.append(self.token_to_idx[" "])
                 else:
                     raise ValueError("Invalid Dir Path")
             dataset.append([wav_file_path, text_idx])
