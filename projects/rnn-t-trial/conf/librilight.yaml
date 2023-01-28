@@ -10,18 +10,16 @@ model:
     input_size: 80
     hidden_size: 512
     num_layers: 3
-    output_size: 512
   predictor:
-    embedding_size: 256
-    hidden_size: 256
+    embedding_size: 512
+    hidden_size: 512
     num_layers: 3
-    output_size: 256
   jointnet:
-    hidden_size: 256
+    hidden_size: 512
 
 train:
-  num_epoch: 100
-  num_batch: 1
-  accum_step: 4
+  num_epoch: 50
+  num_batch: 4
+  accum_step: 1
   lr: 0.0001
   weight_decay: 0.0001

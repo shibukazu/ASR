@@ -63,29 +63,32 @@ def main(cfg: DictConfig):
             idx_to_token = dataset.idx_to_token
             vocab_size = len(dataset.idx_to_token)
         elif cfg.dataset.name == "LibriLight":
-            dataset = LibriLightDataset(
+            train_dataset = LibriLightDataset(
+                subset="9h",
+                vocab_file_path="vocabs/libri_light_9h.json",
+            )
+            test_dataset = LibriLightDataset(
                 subset="1h",
-                vocab_file_path="vocabs/libri_light_1h.json",
+                vocab_file_path="vocabs/libri_light_9h.json",
             )
-            train_dataset, test_dataset = torch.utils.data.random_split(
-                dataset, [int(len(dataset) * 0.8), len(dataset) - int(len(dataset) * 0.8)]
-            )
+
             train_dataloader = torch.utils.data.DataLoader(
                 train_dataset,
                 batch_size=cfg.train.num_batch,
                 shuffle=True,
-                collate_fn=dataset.collate_fn,
+                collate_fn=train_dataset.collate_fn,
                 drop_last=True,
             )
             test_dataloader = torch.utils.data.DataLoader(
                 test_dataset,
                 batch_size=cfg.train.num_batch,
                 shuffle=False,
-                collate_fn=dataset.collate_fn,
+                collate_fn=test_dataset.collate_fn,
                 drop_last=False,
             )
-            blank_idx = dataset.blank_idx
-            vocab_size = len(dataset.vocab)
+            blank_idx = train_dataset.blank_idx
+            idx_to_token = train_dataset.idx_to_token
+            vocab_size = len(train_dataset.idx_to_token)
         else:
             raise NotImplementedError
 

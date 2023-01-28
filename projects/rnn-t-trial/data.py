@@ -9,7 +9,6 @@ import pandas as pd
 import torch
 import torchaudio
 from torchaudio.transforms import Resample
-from transformers import Wav2Vec2CTCTokenizer
 
 
 class YesNoDataset(torch.utils.data.Dataset):
@@ -151,7 +150,6 @@ class LibriLightBase(torch.utils.data.Dataset):
 
                     # transcript normalization
                     transcript = transcript.lower()
-                    transcript = transcript + "\n"
 
                     self.examples.append(
                         self.Example(
@@ -196,17 +194,13 @@ class LibriLightDataset(torch.utils.data.Dataset):
             if not os.path.exists(vocab_file_path):
                 raise ValueError(f"vocab file not found at {vocab_file_path}")
 
-        self.tokenizer = Wav2Vec2CTCTokenizer(
-            vocab_file_path, unk_token="[UNK]", pad_token="[PAD]", word_delimiter_token="|"
-        )
-
-        with open(vocab_file_path, "r") as vocab_file:
-            vocab = json.load(vocab_file)
-        self.vocab = vocab
-        self.pad_idx = vocab["[PAD]"]
-        self.unk_idx = vocab["[UNK]"]
-        self.blank_idx = vocab["_"]
-        self.sos_idx = vocab["[SOS]"]
+        with open(vocab_file_path, "r") as f:
+            token_to_idx = json.load(f)
+        self.token_to_idx = token_to_idx
+        self.idx_to_token = {v: k for k, v in self.token_to_idx.items()}
+        self.pad_idx = self.token_to_idx["<pad>"]
+        self.unk_idx = self.token_to_idx["<unk>"]
+        self.blank_idx = self.token_to_idx["<blank>"]
 
     def __len__(self):
         return len(self.dataset)
@@ -221,7 +215,7 @@ class LibriLightDataset(torch.utils.data.Dataset):
 
         x = mel_spec_db.transpose(0, 1)
         x_len = len(x)
-        y = self.tokenizer(example.transcript).input_ids
+        y = self.convert_text_to_token_indices(example.transcript)
         y_len = len(y)
 
         transcript = example.transcript
@@ -259,18 +253,22 @@ class LibriLightDataset(torch.utils.data.Dataset):
     def extract_vocab(self, all_text: List, vocab_file_path: str) -> None:
         print("extracting vocab...")
         all_text = " ".join(all_text)
-        vocab_list = list(set(all_text))
+        token_list = list(set(all_text))
 
-        vocab = {v: k for k, v in enumerate(vocab_list)}
-        # use | as delimeter in stead of " "
-        vocab["|"] = vocab[" "]
-        # delete unused char
-        del vocab[" "]
-        # add unk and pad token
-        vocab["[UNK]"] = len(vocab)
-        vocab["[PAD]"] = len(vocab)
-        vocab["_"] = len(vocab)
-        vocab["[SOS]"] = len(vocab)
+        token_to_idx = {v: k for k, v in enumerate(token_list)}
+        # add unk, pad, blank token
+        token_to_idx["<unk>"] = len(token_to_idx)
+        token_to_idx["<pad>"] = len(token_to_idx)
+        token_to_idx["<blank>"] = len(token_to_idx)
 
-        with open(vocab_file_path, "w") as vocab_file:
-            json.dump(vocab, vocab_file)
+        with open(vocab_file_path, "w") as f:
+            json.dump(token_to_idx, f)
+
+    def convert_text_to_token_indices(self, text: str) -> List[int]:
+        token_indices = []
+        for char in text:
+            if char in self.token_to_idx:
+                token_indices.append(self.token_to_idx[char])
+            else:
+                token_indices.append(self.unk_idx)
+        return token_indices

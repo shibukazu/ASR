@@ -1,3 +1,5 @@
+from typing import List
+
 import torch
 from modules.encoder import Encoder
 from modules.jointnet import JointNet
@@ -56,7 +58,7 @@ class Model(torch.nn.Module):
         return padded_output, subsampled_enc_input_lengths
 
     @torch.no_grad()
-    def greedy_inference(self, enc_inputs, enc_input_lengths):
+    def greedy_inference(self, enc_inputs, enc_input_lengths) -> List[List[int]]:
         # enc_inputs: 3D tensor (batch, seq_len, n_mel)
         # enc_input_lengths: 1D tensor (batch)
         # output: 2D List (batch, hyp_len)
@@ -86,7 +88,7 @@ class Model(torch.nn.Module):
                 else:
                     timestamp += 1
 
-                if len(hyp_tokens) >= 100:
+                if len(hyp_tokens) >= 400:
                     break
             batch_hyp_tokens.append(hyp_tokens)
         return batch_hyp_tokens
