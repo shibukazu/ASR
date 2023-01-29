@@ -2,7 +2,7 @@ import torch
 from modules.subsampling import Conv2DSubSampling
 
 
-class Encoder(torch.nn.Module):
+class LSTMEncoder(torch.nn.Module):
     def __init__(self, input_size, hidden_size, num_layers, dropout):
         super().__init__()
         self.subsampling = Conv2DSubSampling(input_size, hidden_size, 3, 2, 3, 2)
