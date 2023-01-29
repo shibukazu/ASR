@@ -3,10 +3,12 @@ from modules.subsampling import Conv2DSubSampling
 
 
 class Encoder(torch.nn.Module):
-    def __init__(self, input_size, hidden_size, num_layers):
+    def __init__(self, input_size, hidden_size, num_layers, dropout):
         super().__init__()
         self.subsampling = Conv2DSubSampling(input_size, hidden_size, 3, 2, 3, 2)
-        self.lstm = torch.nn.LSTM(hidden_size, hidden_size, num_layers, batch_first=True, bidirectional=True)
+        self.lstm = torch.nn.LSTM(
+            hidden_size, hidden_size, num_layers, batch_first=True, bidirectional=True, dropout=dropout
+        )
 
     def forward(self, padded_input, input_lengths):
         subsampled_padded_input, subsampled_input_lengths = self.subsampling(padded_input, input_lengths)

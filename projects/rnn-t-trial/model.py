@@ -12,6 +12,7 @@ class Model(torch.nn.Module):
         encoder_input_size,
         encoder_hidden_size,
         encoder_num_layers,
+        encoder_dropout,
         vocab_size,
         embedding_size,
         predictor_hidden_size,
@@ -27,6 +28,7 @@ class Model(torch.nn.Module):
             input_size=encoder_input_size,
             hidden_size=encoder_hidden_size,
             num_layers=encoder_num_layers,
+            dropout=encoder_dropout,
         )
 
         self.predictor = Predictor(

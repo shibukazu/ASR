@@ -9,6 +9,7 @@ import pandas as pd
 import torch
 import torchaudio
 from torchaudio.transforms import Resample
+from modules.spec_aug import SpecAug
 
 
 class YesNoDataset(torch.utils.data.Dataset):
@@ -166,6 +167,7 @@ class LibriLightDataset(torch.utils.data.Dataset):
     def __init__(
         self,
         subset: str,
+        spec_aug: SpecAug = None,
         root: str = "datasets/librispeech_finetuning",
         vocab_file_path: str = "vocabs/librilight.json",
     ):
@@ -183,6 +185,7 @@ class LibriLightDataset(torch.utils.data.Dataset):
             window_fn=torch.hann_window,
         )
         self.amplitude_to_db = torchaudio.transforms.AmplitudeToDB(stype="power")
+        self.spec_aug = spec_aug
 
         if not os.path.exists(vocab_file_path):
             # extract vocab from train dataset
@@ -214,6 +217,8 @@ class LibriLightDataset(torch.utils.data.Dataset):
         mel_spec_db = self.amplitude_to_db(mel_spec)
 
         x = mel_spec_db.transpose(0, 1)
+        if self.spec_aug is not None:
+            x = self.spec_aug(x)
         x_len = len(x)
         y = self.convert_text_to_token_indices(example.transcript)
         y_len = len(y)

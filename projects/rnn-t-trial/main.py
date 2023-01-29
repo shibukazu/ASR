@@ -8,6 +8,7 @@ from conf import logging_conf
 from data import LibriLightDataset, YesNoDataset
 from hydra.core.hydra_config import HydraConfig
 from model import Model
+from modules.spec_aug import SpecAug
 from omegaconf import DictConfig
 from rich.logging import RichHandler
 from torchaudio.functional import rnnt_loss
@@ -63,9 +64,14 @@ def main(cfg: DictConfig):
             idx_to_token = dataset.idx_to_token
             vocab_size = len(dataset.idx_to_token)
         elif cfg.dataset.name == "LibriLight":
+            spec_aug = SpecAug(
+                freq_mask_max_length=cfg.model.spec_aug.freq_mask_max_length,
+                time_mask_max_length=cfg.model.spec_aug.time_mask_max_length,
+                num_freq_mask=cfg.model.spec_aug.num_freq_mask,
+                num_time_mask=cfg.model.spec_aug.num_time_mask,
+            )
             train_dataset = LibriLightDataset(
-                subset="9h",
-                vocab_file_path="vocabs/libri_light_9h.json",
+                subset="9h", vocab_file_path="vocabs/libri_light_9h.json", spec_aug=spec_aug
             )
             test_dataset = LibriLightDataset(
                 subset="1h",
@@ -98,6 +104,7 @@ def main(cfg: DictConfig):
             encoder_input_size=cfg.model.encoder.input_size,
             encoder_hidden_size=cfg.model.encoder.hidden_size,
             encoder_num_layers=cfg.model.encoder.num_layers,
+            encoder_dropout=cfg.model.encoder.dropout,
             embedding_size=cfg.model.predictor.embedding_size,
             predictor_hidden_size=cfg.model.predictor.hidden_size,
             predictor_num_layers=cfg.model.predictor.num_layers,
@@ -139,9 +146,7 @@ def main(cfg: DictConfig):
                 )
                 epoch_train_loss += loss.item()
 
-                bhyp_token_indices = model.greedy_inference(
-                    enc_inputs=benc_input, enc_input_lengths=benc_input_length
-                )
+                bhyp_token_indices = model.greedy_inference(enc_inputs=benc_input, enc_input_lengths=benc_input_length)
                 bans_token_indices = [
                     bpred_input[i, : bpred_input_length[i]].tolist() for i in range(bpred_input.shape[0])
                 ]
@@ -178,9 +183,7 @@ def main(cfg: DictConfig):
             epoch_test_cer = 0
             epoch_test_wer = 0
             with torch.no_grad():
-                for j, (benc_input, bpred_input, benc_input_length, bpred_input_length) in enumerate(
-                    test_dataloader
-                ):
+                for j, (benc_input, bpred_input, benc_input_length, bpred_input_length) in enumerate(test_dataloader):
                     benc_input = benc_input.to(DEVICE)
                     bpred_input = bpred_input.to(DEVICE)
 
