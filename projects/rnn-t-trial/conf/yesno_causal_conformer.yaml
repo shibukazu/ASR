@@ -1,0 +1,35 @@
+hydra:
+  run:
+    dir: /home/shibutani/fs/ASR/projects/template/outputs/${now:%Y-%m-%d}/${now:%H-%M-%S}
+
+dataset:
+  name: "YesNo"
+
+model:
+  encoder:
+    input_size: 40
+    subsampled_input_size: 32
+    num_conformer_blocks: 1
+    ff_hidden_size: 32
+    conv_hidden_size: 32
+    conv_kernel_size: 16
+    mha_num_heads: 4
+    dropout: 0
+  predictor:
+    embedding_size: 64
+    hidden_size: 64
+    num_layers: 1
+  jointnet:
+    hidden_size: 64
+  spec_aug:
+    num_freq_mask: 2
+    freq_mask_max_length: 30
+    num_time_mask: 2
+    time_mask_max_length: 40
+
+train:
+  num_epoch: 100
+  num_batch: 2
+  accum_step: 1
+  lr: 0.0005
+  weight_decay: 0.0001

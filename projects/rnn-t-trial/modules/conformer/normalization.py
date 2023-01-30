@@ -4,7 +4,7 @@ import torch
 class CausalBatchNormalization(torch.nn.Module):
     def __init__(
         self,
-        eps=1e-5,
+        eps=1e-8,
         affine=True,
     ):
         super().__init__()
@@ -23,7 +23,7 @@ class CausalBatchNormalization(torch.nn.Module):
         )
         cum_mean = cum_sum / cum_num_element
         cum_var = ((x - cum_mean) ** 2).cumsum(dim=-1).sum(dim=0).repeat(x.shape[0], 1, 1) / cum_num_element
-        cum_std = torch.sqrt(cum_var)
+        cum_std = torch.sqrt(cum_var + self.eps)
         cum_std = cum_std + self.eps
         normalized_x = (x - cum_mean) / cum_std
         if self.affine:
@@ -34,7 +34,7 @@ class CausalBatchNormalization(torch.nn.Module):
 class CausalLayerNormalization(torch.nn.Module):
     def __init__(
         self,
-        eps=1e-5,
+        eps=1e-8,
         affine=True,
     ):
         super().__init__()
@@ -55,7 +55,7 @@ class CausalLayerNormalization(torch.nn.Module):
         cum_var = ((x - cum_mean) ** 2).cumsum(dim=-1).sum(dim=1).unsqueeze(1).repeat(
             1, x.shape[1], 1
         ) / cum_num_element
-        cum_std = torch.sqrt(cum_var)
+        cum_std = torch.sqrt(cum_var + self.eps)
         cum_std = cum_std + self.eps
         normalized_x = (x - cum_mean) / cum_std
         if self.affine:

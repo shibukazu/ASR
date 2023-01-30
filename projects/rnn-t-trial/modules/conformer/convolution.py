@@ -1,8 +1,9 @@
 import torch
+
 from . import normalization
 
 
-class ConvolutionLayer(torch.nn.Module):
+class ConvolutionModule(torch.nn.Module):
     def __init__(self, input_channels, hidden_channels, depthwise_kernel_size, dropout):
         super().__init__()
         self.layer_norm = torch.nn.LayerNorm(input_channels)  # 全チャネルでの正規化
@@ -86,7 +87,7 @@ class CausalConv1d(torch.nn.Conv1d):
         return output
 
 
-class CausalConvolutionLayer(torch.nn.Module):
+class CausalConvolutionModule(torch.nn.Module):
     def __init__(self, input_channels, hidden_channels, depthwise_kernel_size, dropout):
         super().__init__()
         self.layer_norm = normalization.CausalLayerNormalization()

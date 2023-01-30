@@ -7,7 +7,7 @@ import torch
 from conf import logging_conf
 from data import LibriLightDataset, YesNoDataset
 from hydra.core.hydra_config import HydraConfig
-from model import Model
+from model import CausalConformerModel
 from modules.spec_aug import SpecAug
 from omegaconf import DictConfig
 from rich.logging import RichHandler
@@ -97,13 +97,17 @@ def main(cfg: DictConfig):
             vocab_size = len(train_dataset.idx_to_token)
         else:
             raise NotImplementedError
-
-        model = Model(
+        torch.autograd.set_detect_anomaly(True)
+        model = CausalConformerModel(
             vocab_size=vocab_size,
             blank_idx=blank_idx,
             encoder_input_size=cfg.model.encoder.input_size,
-            encoder_hidden_size=cfg.model.encoder.hidden_size,
-            encoder_num_layers=cfg.model.encoder.num_layers,
+            encoder_subsampled_input_size=cfg.model.encoder.subsampled_input_size,
+            encoder_num_conformer_blocks=cfg.model.encoder.num_conformer_blocks,
+            encoder_ff_hidden_size=cfg.model.encoder.ff_hidden_size,
+            encoder_conv_hidden_size=cfg.model.encoder.conv_hidden_size,
+            encoder_conv_kernel_size=cfg.model.encoder.conv_kernel_size,
+            encoder_mha_num_heads=cfg.model.encoder.mha_num_heads,
             encoder_dropout=cfg.model.encoder.dropout,
             embedding_size=cfg.model.predictor.embedding_size,
             predictor_hidden_size=cfg.model.predictor.hidden_size,

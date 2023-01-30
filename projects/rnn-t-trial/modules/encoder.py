@@ -1,4 +1,5 @@
 import torch
+from modules.conformer.conformer import CausalConformerBlock
 from modules.subsampling import Conv2DSubSampling
 
 
@@ -22,3 +23,40 @@ class LSTMEncoder(torch.nn.Module):
         padded_output = padded_output[:, :, : self.lstm.hidden_size] + padded_output[:, :, self.lstm.hidden_size :]
 
         return padded_output, subsampled_input_lengths
+
+
+class CausalConformerEncoder(torch.nn.Module):
+    def __init__(
+        self,
+        input_size,
+        subsampled_input_size,
+        num_conformer_blocks,
+        ff_hidden_size,
+        conv_hidden_size,
+        conv_kernel_size,
+        mha_num_heads,
+        dropout,
+    ):
+        super().__init__()
+        self.subsampling = Conv2DSubSampling(input_size, subsampled_input_size, 3, 2, 3, 2)
+        self.conformer_blocks = torch.nn.ModuleList(
+            [
+                CausalConformerBlock(
+                    input_size=subsampled_input_size,
+                    ff_hidden_size=ff_hidden_size,
+                    conv_hidden_size=conv_hidden_size,
+                    conv_kernel_size=conv_kernel_size,
+                    mha_num_heads=mha_num_heads,
+                    dropout=dropout,
+                )
+                for _ in range(num_conformer_blocks)
+            ]
+        )
+
+    def forward(self, padded_input, input_lengths):
+        subsampled_padded_input, subsampled_input_lengths = self.subsampling(padded_input, input_lengths)
+        output = subsampled_padded_input
+        for conformer_block in self.conformer_blocks:
+            output = conformer_block(output, subsampled_input_lengths)
+
+        return output, subsampled_input_lengths
