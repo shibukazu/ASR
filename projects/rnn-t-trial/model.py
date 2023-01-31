@@ -118,7 +118,7 @@ class CausalConformerModel(torch.nn.Module):
         predictor_num_layers,
         jointnet_hidden_size,
         blank_idx,
-        decoder_buffer_size=None,
+        decoder_buffer_size,
     ):
         super().__init__()
 

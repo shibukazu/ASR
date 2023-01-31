@@ -13,7 +13,6 @@ from modules.spec_aug import SpecAug
 from omegaconf import DictConfig
 from rich.logging import RichHandler
 from torchaudio.functional import rnnt_loss
-from torchmetrics.functional import char_error_rate, word_error_rate
 from tqdm import tqdm
 from util.mlflow import log_params_from_omegaconf_dict
 
@@ -67,7 +66,6 @@ def main(cfg: DictConfig):
                 pin_memory=True,
             )
             blank_idx = dataset.blank_idx
-            idx_to_token = dataset.idx_to_token
             vocab_size = len(dataset.idx_to_token)
         elif cfg.dataset.name == "Librispeech":
             spec_aug = SpecAug(
@@ -108,7 +106,6 @@ def main(cfg: DictConfig):
                 pin_memory=True,
             )
             blank_idx = train_dataset.blank_idx
-            idx_to_token = train_dataset.idx_to_token
             vocab_size = len(train_dataset.idx_to_token)
         else:
             raise NotImplementedError
@@ -149,14 +146,12 @@ def main(cfg: DictConfig):
         )
 
         NUM_EPOCH = cfg.train.num_epoch
-        min_train_wer = 1.0
+
         for i in range(1, NUM_EPOCH + 1):
             logger.info(f"Epoch {i} has started.")
 
             model.train()
             epoch_train_loss = 0
-            epoch_train_cer = 0
-            epoch_train_wer = 0
             accum_sec = 0
             for benc_input, bpred_input, benc_input_length, bpred_input_length, baudio_sec in tqdm(train_dataloader):
                 accum_sec += sum(baudio_sec)
@@ -180,31 +175,6 @@ def main(cfg: DictConfig):
                 )
                 loss.backward()
                 epoch_train_loss += loss.item()
-                if cfg.decoder.type == "streaming_greedy":
-                    bhyp_token_indices = model.streaming_greedy_inference(
-                        enc_inputs=benc_input, enc_input_lengths=benc_input_length
-                    )
-                elif cfg.decoder.type == "non_streaming_greedy":
-                    bhyp_token_indices = model.greedy_inference(
-                        enc_inputs=benc_input, enc_input_lengths=benc_input_length
-                    )
-                else:
-                    raise NotImplementedError
-                bans_token_indices = [
-                    bpred_input[i, : bpred_input_length[i]].tolist() for i in range(bpred_input.shape[0])
-                ]
-                bhyp_text = [
-                    "".join([idx_to_token[idx] for idx in hyp_token_indices])
-                    for hyp_token_indices in bhyp_token_indices
-                ]
-                bans_text = [
-                    "".join([idx_to_token[idx] for idx in ans_token_indices])
-                    for ans_token_indices in bans_token_indices
-                ]
-
-                # char_error_rate and word_error_rate are automatically reduced by average
-                epoch_train_cer += char_error_rate(bhyp_text, bans_text) * benc_input.shape[0]
-                epoch_train_wer += word_error_rate(bhyp_text, bans_text) * benc_input.shape[0]
 
                 if accum_sec > cfg.train.accum_sec:
                     optimizer.step()
@@ -214,17 +184,9 @@ def main(cfg: DictConfig):
 
             logger.info(f"Train loss: {epoch_train_loss / len(train_dataset)}")
             mlflow.log_metric("train_loss", epoch_train_loss / len(train_dataset), step=i)
-            logger.info(f"Train CER: {epoch_train_cer / len(train_dataset)}")
-            mlflow.log_metric("train_cer", epoch_train_cer / len(train_dataset), step=i)
-            logger.info(f"Train WER: {epoch_train_wer / len(train_dataset)}")
-            mlflow.log_metric("train_wer", epoch_train_wer / len(train_dataset), step=i)
-
-            min_train_wer = min(min_train_wer, epoch_train_wer / len(train_dataset))
 
             model.eval()
             epoch_dev_loss = 0
-            epoch_dev_cer = 0
-            epoch_dev_wer = 0
             with torch.no_grad():
                 for benc_input, bpred_input, benc_input_length, bpred_input_length, baudio_sec in tqdm(dev_dataloader):
                     benc_input = benc_input.to(DEVICE)
@@ -246,58 +208,19 @@ def main(cfg: DictConfig):
                     )
                     epoch_dev_loss += loss.item()
 
-                    if cfg.decoder.type == "streaming_greedy":
-                        bhyp_token_indices = model.streaming_greedy_inference(
-                            enc_inputs=benc_input, enc_input_lengths=benc_input_length
-                        )
-                    elif cfg.decoder.type == "non_streaming_greedy":
-                        bhyp_token_indices = model.greedy_inference(
-                            enc_inputs=benc_input, enc_input_lengths=benc_input_length
-                        )
-                    else:
-                        raise NotImplementedError
-                    bans_token_indices = [
-                        bpred_input[i, : bpred_input_length[i]].tolist() for i in range(bpred_input.shape[0])
-                    ]
-                    bhyp_text = [
-                        "".join([idx_to_token[idx] for idx in hyp_token_indices])
-                        for hyp_token_indices in bhyp_token_indices
-                    ]
-                    bans_text = [
-                        "".join([idx_to_token[idx] for idx in ans_token_indices])
-                        for ans_token_indices in bans_token_indices
-                    ]
-
-                    epoch_dev_cer += char_error_rate(bhyp_text, bans_text) * benc_input.shape[0]
-                    epoch_dev_wer += word_error_rate(bhyp_text, bans_text) * benc_input.shape[0]
-
-                mlflow.log_metric("dev_loss", epoch_dev_loss / len(dev_dataset), step=i)
                 logger.info(f"Dev loss: {epoch_dev_loss / len(dev_dataset)}")
-                mlflow.log_metric("dev_cer", epoch_dev_cer / len(dev_dataset), step=i)
-                logger.info(f"Dev CER: {epoch_dev_cer / len(dev_dataset)}")
-                mlflow.log_metric("dev_wer", epoch_dev_wer / len(dev_dataset), step=i)
-                logger.info(f"Dev WER: {epoch_dev_wer / len(dev_dataset)}")
-            logger.info(f"Epoch {i} has finished.")
+                mlflow.log_metric("dev_loss", epoch_dev_loss / len(dev_dataset), step=i)
 
-            if i % 10 == 0:
-                checkpoint_dir = f"cpts/{EXPERIMENT_NAME}/{mlflow_run.info.run_id}"
-                os.makedirs(checkpoint_dir, exist_ok=True)
+            if i % 5 == 0:
                 torch.save(
                     {
                         "model": model.state_dict(),
                         "optimizer": optimizer.state_dict(),
                         "scheduler": scheduler.state_dict(),
                         "dev_loss": epoch_dev_loss / len(dev_dataset),
-                        "dev_cer": epoch_dev_cer / len(dev_dataset),
-                        "dev_wer": epoch_dev_wer / len(dev_dataset),
                     },
-                    os.path.join(checkpoint_dir, f"model_{cfg.dataset.name}_{i}.pth"),
+                    os.path.join(mlflow_run.info.artifact_uri, f"model_{cfg.dataset.name}_{i}.pth"),
                 )
-                mlflow.log_artifact(os.path.join(checkpoint_dir, f"model_{cfg.dataset.name}_{i}.pth"))
-
-        if min_train_wer > 0.8:
-            # learning failed
-            exit(1)
 
 
 if __name__ == "__main__":

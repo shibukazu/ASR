@@ -51,6 +51,8 @@ class CausalConformerEncoder(torch.nn.Module):
             subsampling_kernel_size2,
             subsampling_stride2,
         )
+        self.fc = torch.nn.Linear(subsampled_input_size, subsampled_input_size)
+        self.dropout = torch.nn.Dropout(dropout)
         self.conformer_blocks = torch.nn.ModuleList(
             [
                 CausalConformerBlock(
@@ -69,6 +71,8 @@ class CausalConformerEncoder(torch.nn.Module):
     def forward(self, padded_input, input_lengths):
         subsampled_padded_input, subsampled_input_lengths = self.subsampling(padded_input, input_lengths)
         output = subsampled_padded_input
+        output = self.fc(output)
+        output = self.dropout(output)
         for conformer_block in self.conformer_blocks:
             output = conformer_block(output, subsampled_input_lengths)
 

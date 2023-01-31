@@ -8,8 +8,8 @@ import numpy as np
 import pandas as pd
 import torch
 import torchaudio
-from torchaudio.transforms import Resample
 from modules.spec_aug import SpecAug
+from torchaudio.transforms import Resample
 
 
 class YesNoDataset(torch.utils.data.Dataset):
@@ -65,12 +65,14 @@ class YesNoDataset(torch.utils.data.Dataset):
         spectrogram = self.spectrogram_transformer(wav_data)
         spectrogram_db = librosa.amplitude_to_db(spectrogram)
 
-        return spectrogram_db[0].transpose(1, 0), torch.tensor(text_idx, dtype=torch.int32)
+        audio_sec = wav_data.shape[-1] / self.model_sample_rate
+
+        return spectrogram_db[0].transpose(1, 0), torch.tensor(text_idx, dtype=torch.int32), audio_sec
 
     def collate_fn(self, batch):
         # spectrogram_db: tensor[Time, Melbins]
         # text_idx: tensor[text_len]
-        spectrogram_dbs, text_idxs = zip(*batch)
+        spectrogram_dbs, text_idxs, audio_secs = zip(*batch)
 
         original_spectrogram_db_lens = torch.tensor(
             np.array([len(spectrogram_db) for spectrogram_db in spectrogram_dbs]),
@@ -97,7 +99,13 @@ class YesNoDataset(torch.utils.data.Dataset):
         # padded_texts, original_text_idx_lens, batch_first=True, enforce_sorted=False)
 
         # テキストはCTCロス計算でしか使わず、RNNに入力しないのでpackingによるマスクは不要
-        return padded_spectrogram_dbs, padded_text_idxs, original_spectrogram_db_lens, original_text_idx_lens
+        return (
+            padded_spectrogram_dbs,
+            padded_text_idxs,
+            original_spectrogram_db_lens,
+            original_text_idx_lens,
+            audio_secs,
+        )
 
 
 class LibriLightBase(torch.utils.data.Dataset):
@@ -274,6 +282,142 @@ class LibriLightDataset(torch.utils.data.Dataset):
         for char in text:
             if char in self.token_to_idx:
                 token_indices.append(self.token_to_idx[char])
+            else:
+                token_indices.append(self.unk_idx)
+        return token_indices
+
+
+class LibriSpeechDataset(torch.utils.data.Dataset):
+    def __init__(
+        self,
+        root: str,
+        split: str,
+        resampling_rate: int = 16000,
+        vocab_file_path: str = "vocab.json",
+        spec_aug: SpecAug = None,
+    ):
+        """
+        split:
+        train, dev, test, dev-test
+        """
+        if split == "train":
+            dataset_train_clean_100 = torchaudio.datasets.LIBRISPEECH(
+                os.path.join(root, "librispeech"), url="train-clean-100"
+            )
+            dataset_train_clean_360 = torchaudio.datasets.LIBRISPEECH(
+                os.path.join(root, "librispeech"), url="train-clean-360"
+            )
+            dataset_train_other_500 = torchaudio.datasets.LIBRISPEECH(
+                os.path.join(root, "librispeech"), url="train-other-500"
+            )
+            self.dataset = dataset_train_clean_100 + dataset_train_clean_360 + dataset_train_other_500
+        elif split == "dev-clean":
+            self.dataset = torchaudio.datasets.LIBRISPEECH(os.path.join(root, "librispeech"), url="dev-clean")
+        elif split == "dev-other":
+            self.dataset = torchaudio.datasets.LIBRISPEECH(os.path.join(root, "librispeech"), url="dev-other")
+        elif split == "dev":
+            dataset_dev_clean = torchaudio.datasets.LIBRISPEECH(os.path.join(root, "librispeech"), url="dev-clean")
+            dataset_dev_other = torchaudio.datasets.LIBRISPEECH(os.path.join(root, "librispeech"), url="dev-other")
+            self.dataset = dataset_dev_clean + dataset_dev_other
+        elif split == "test-clean":
+            self.dataset = torchaudio.datasets.LIBRISPEECH(os.path.join(root, "librispeech"), url="test-clean")
+        elif split == "test-other":
+            self.dataset = torchaudio.datasets.LIBRISPEECH(os.path.join(root, "librispeech"), url="test-other")
+        elif split == "test":
+            dataset_test_clean = torchaudio.datasets.LIBRISPEECH(os.path.join(root, "librispeech"), url="test-clean")
+            dataset_test_other = torchaudio.datasets.LIBRISPEECH(os.path.join(root, "librispeech"), url="test-other")
+            self.dataset = dataset_test_clean + dataset_test_other
+        else:
+            raise ValueError("Invalid split")
+        self.resampling_rate = resampling_rate
+        self.mel_spec_converter = torchaudio.transforms.MelSpectrogram(
+            sample_rate=16000,
+            n_fft=400,
+            win_length=400,  # 25ms
+            hop_length=160,  # 10ms
+            n_mels=80,
+            window_fn=torch.hann_window,
+        )
+        self.amplitude_to_db = torchaudio.transforms.AmplitudeToDB(stype="power")
+        self.spec_aug = spec_aug
+
+        if not os.path.exists(vocab_file_path):
+            # extract vocab from train dataset
+            transcripts = []
+            for example in self.dataset:
+                transcript = example[2]
+                transcript = transcript.lower()
+                transcripts.append(transcript)
+            self.extract_vocab(transcripts, vocab_file_path)
+        else:
+            if not os.path.exists(vocab_file_path):
+                raise ValueError(f"vocab file not found at {vocab_file_path}")
+
+        with open(vocab_file_path, "r") as f:
+            token_to_idx = json.load(f)
+        self.token_to_idx = token_to_idx
+        self.idx_to_token = {v: k for k, v in self.token_to_idx.items()}
+        self.pad_idx = self.token_to_idx["<pad>"]
+        self.unk_idx = self.token_to_idx["<unk>"]
+        self.blank_idx = self.token_to_idx["<blank>"]
+
+    def __len__(self):
+        return len(self.dataset)
+
+    def __getitem__(self, idx):
+        audio, sampling_rate, transcript, speaker_id, chapter_id, utterance_id = self.dataset[idx]
+        audio = audio.flatten()
+        resampler = Resample(sampling_rate, self.resampling_rate)
+        resampled_audio = resampler(audio)
+        mel_spec = self.mel_spec_converter(resampled_audio)
+        mel_spec_db = self.amplitude_to_db(mel_spec)
+        x = mel_spec_db.transpose(0, 1)
+        if self.spec_aug is not None:
+            x = self.spec_aug(x)
+        x_len = len(x)
+        transcript = transcript.lower()
+        y = self.convert_transcript_to_token_indices(transcript)
+        y_len = len(y)
+
+        audio_sec = len(resampled_audio) / self.resampling_rate
+
+        return (
+            x,
+            torch.tensor(x_len, dtype=torch.int32),
+            torch.tensor(y, dtype=torch.int32),
+            torch.tensor(y_len, dtype=torch.int32),
+            audio_sec,
+        )
+
+    def collate_fn(self, batch):
+        bx, bx_len, by, by_len, baudio_sec = zip(*batch)
+
+        bx = torch.nn.utils.rnn.pad_sequence(bx, batch_first=True, padding_value=0)
+        bx_len = torch.tensor(bx_len)
+        by = torch.nn.utils.rnn.pad_sequence(by, batch_first=True, padding_value=self.pad_idx)
+        by_len = torch.tensor(by_len)
+
+        return bx, by, bx_len, by_len, baudio_sec
+
+    def extract_vocab(self, all_transcripts: List, vocab_file_path: str) -> None:
+        print("Extracting vocab...")
+        all_transcripts = " ".join(all_transcripts)
+        token_list = list(set(all_transcripts))
+
+        token_to_idx = {v: k for k, v in enumerate(token_list)}
+        # add unk, pad, blank token
+        token_to_idx["<unk>"] = len(token_to_idx)
+        token_to_idx["<pad>"] = len(token_to_idx)
+        token_to_idx["<blank>"] = len(token_to_idx)
+
+        with open(vocab_file_path, "w") as f:
+            json.dump(token_to_idx, f)
+
+    def convert_transcript_to_token_indices(self, transcript: str) -> List[int]:
+        token_indices = []
+        for token in transcript:
+            if token in self.token_to_idx:
+                token_indices.append(self.token_to_idx[token])
             else:
                 token_indices.append(self.unk_idx)
         return token_indices

@@ -3,16 +3,17 @@ hydra:
     dir: /home/shibutani/fs/ASR/projects/rnn-t-trial/outputs/${now:%Y-%m-%d}/${now:%H-%M-%S}
 
 dataset:
-  name: "YesNo"
+  name: "Librispeech"
+  dev_split: "dev-other"
 
 model:
   encoder:
-    input_size: 40
-    subsampled_input_size: 128
-    num_conformer_blocks: 1
-    ff_hidden_size: 128
-    conv_hidden_size: 128
-    conv_kernel_size: 16
+    input_size: 80
+    subsampled_input_size: 144
+    num_conformer_blocks: 16
+    ff_hidden_size: 144
+    conv_hidden_size: 144
+    conv_kernel_size: 32
     mha_num_heads: 4
     dropout: 0.1
     subsampling_kernel_size1: 3
@@ -21,11 +22,11 @@ model:
     subsampling_stride2: 2
     num_previous_frames: "all"
   predictor:
-    embedding_size: 64
-    hidden_size: 64
+    embedding_size: 320
+    hidden_size: 320
     num_layers: 1
   jointnet:
-    hidden_size: 64
+    hidden_size: 320
   spec_aug:
     num_freq_mask: 2
     freq_mask_max_length: 30
@@ -38,12 +39,12 @@ decoder:
 
 train:
   num_epoch: 100
-  num_batch: 2
-  accum_sec: 1
+  num_batch: 20
+  accum_sec: 180
   optimize:
-    warmup_steps: 25000
-    lr: 5.0
-    weight_decay: 0.0001
+    lr: 5
+    warmup_steps: 10000
+    weight_decay: 0.000001
     eps: 0.000000001
     beta1: 0.9
     beta2: 0.98
