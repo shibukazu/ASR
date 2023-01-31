@@ -107,16 +107,24 @@ class CausalConformerModel(torch.nn.Module):
         encoder_conv_kernel_size,
         encoder_mha_num_heads,
         encoder_dropout,
+        encoder_subsampling_kernel_size1,
+        encoder_subsampling_stride1,
+        encoder_subsampling_kernel_size2,
+        encoder_subsampling_stride2,
+        encoder_num_previous_frames,
         vocab_size,
         embedding_size,
         predictor_hidden_size,
         predictor_num_layers,
         jointnet_hidden_size,
         blank_idx,
+        decoder_buffer_size=None,
     ):
         super().__init__()
 
         self.blank_idx = blank_idx
+        self.decoder_buffer_size = decoder_buffer_size
+        self.encoder_num_previous_frames = encoder_num_previous_frames
 
         self.encoder = CausalConformerEncoder(
             input_size=encoder_input_size,
@@ -127,6 +135,11 @@ class CausalConformerModel(torch.nn.Module):
             conv_kernel_size=encoder_conv_kernel_size,
             mha_num_heads=encoder_mha_num_heads,
             dropout=encoder_dropout,
+            subsampling_kernel_size1=encoder_subsampling_kernel_size1,
+            subsampling_stride1=encoder_subsampling_stride1,
+            subsampling_kernel_size2=encoder_subsampling_kernel_size2,
+            subsampling_stride2=encoder_subsampling_stride2,
+            num_previous_frames=encoder_num_previous_frames,
         )  # [B, subsampled_T, subsampled_D]
 
         self.predictor = Predictor(
@@ -192,3 +205,51 @@ class CausalConformerModel(torch.nn.Module):
                     break
             batch_hyp_tokens.append(hyp_tokens)
         return batch_hyp_tokens
+
+    @torch.no_grad()
+    def streaming_greedy_inference(self, enc_inputs, enc_input_lengths):
+        # enc_inputs: 3D tensor (batch, seq_len, n_mel)
+        # enc_input_lengths: 1D tensor (batch)
+        # output: 2D List (batch, hyp_len)
+        batch_hyp_token_indices = []
+        BUFFER_SIZE = self.decoder_buffer_size
+        NUM_PREVIOUS_FRAMES = self.encoder_num_previous_frames
+        for enc_input, enc_input_length in zip(enc_inputs, enc_input_lengths):
+            if enc_input.size(0) > enc_input_length:
+                enc_input = enc_input[:enc_input_length, :]
+            hyp_token_indices = []
+            buffer = []
+            pred_input = torch.tensor([[self.blank_idx]], dtype=torch.int32).to(enc_input.device)
+            pred_output, hidden = self.predictor.forward_wo_prepend(pred_input, torch.tensor([1]), hidden=None)
+            for i in range(5, enc_input.shape[0]):
+                if NUM_PREVIOUS_FRAMES == "all":
+                    buffer.append(enc_input[: i + 1])
+                else:
+                    buffer.append(enc_input[max(i + 1 - NUM_PREVIOUS_FRAMES, 0) : i + 1])
+                if len(buffer) == BUFFER_SIZE:
+                    batch = torch.nn.utils.rnn.pad_sequence(buffer, batch_first=True, padding_value=0)
+                    batch_lengths = torch.tensor([len(x) for x in buffer])
+                    buffer = []
+                    batch_enc_output, batch_subsampled_length = self.encoder(batch, batch_lengths)
+                    for j in range(len(batch_enc_output)):
+                        subsampled_length = batch_subsampled_length[j]
+                        # NOTE: JointNetは線形層を通しているだけであり、時刻に関して独立->現在のenc_outだけで十分
+                        enc_output = batch_enc_output[j][subsampled_length - 1].view(1, 1, -1)
+                        num_token_indices = 0
+                        while True:
+                            logits = self.jointnet(enc_output, pred_output)[0]
+                            pred_token_idx = torch.argmax(logits, dim=-1)
+                            if pred_token_idx == self.blank_idx:
+                                break
+                            else:
+                                num_token_indices += 1
+                                hyp_token_indices.append(pred_token_idx.item())
+                                pred_input = torch.tensor([[pred_token_idx]], dtype=torch.int32).to(enc_input.device)
+                                pred_output, hidden = self.predictor.forward_wo_prepend(
+                                    pred_input, torch.tensor([1]), hidden=hidden
+                                )
+
+                            if num_token_indices > 10:
+                                break
+            batch_hyp_token_indices.append(hyp_token_indices)
+        return batch_hyp_token_indices

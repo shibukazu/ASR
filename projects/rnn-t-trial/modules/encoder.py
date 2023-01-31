@@ -36,9 +36,21 @@ class CausalConformerEncoder(torch.nn.Module):
         conv_kernel_size,
         mha_num_heads,
         dropout,
+        subsampling_kernel_size1,
+        subsampling_stride1,
+        subsampling_kernel_size2,
+        subsampling_stride2,
+        num_previous_frames,
     ):
         super().__init__()
-        self.subsampling = Conv2DSubSampling(input_size, subsampled_input_size, 3, 2, 3, 2)
+        self.subsampling = Conv2DSubSampling(
+            input_size,
+            subsampled_input_size,
+            subsampling_kernel_size1,
+            subsampling_stride1,
+            subsampling_kernel_size2,
+            subsampling_stride2,
+        )
         self.conformer_blocks = torch.nn.ModuleList(
             [
                 CausalConformerBlock(
@@ -48,6 +60,7 @@ class CausalConformerEncoder(torch.nn.Module):
                     conv_kernel_size=conv_kernel_size,
                     mha_num_heads=mha_num_heads,
                     dropout=dropout,
+                    num_previous_frames=num_previous_frames,
                 )
                 for _ in range(num_conformer_blocks)
             ]

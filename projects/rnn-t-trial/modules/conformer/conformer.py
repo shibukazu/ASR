@@ -12,11 +12,14 @@ class CausalConformerBlock(torch.nn.Module):
         conv_kernel_size,
         mha_num_heads,
         dropout,
+        num_previous_frames,
     ):
         super().__init__()
         self.ff_module1 = feed_forward.FeedForwardModule(input_size, ff_hidden_size, dropout)
         self.conv_module = convolution.CausalConvolutionModule(input_size, conv_hidden_size, conv_kernel_size, dropout)
-        self.mha_module = multi_head_attention.CausalMultiHeadAttentionModule(input_size, mha_num_heads, dropout)
+        self.mha_module = multi_head_attention.CausalMultiHeadAttentionModule(
+            input_size, mha_num_heads, dropout, num_previous_frames=num_previous_frames
+        )
         self.ff_module2 = feed_forward.FeedForwardModule(input_size, ff_hidden_size, dropout)
         self.layer_norm = normalization.CausalLayerNormalization()
 

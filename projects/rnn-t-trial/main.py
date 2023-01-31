@@ -109,10 +109,16 @@ def main(cfg: DictConfig):
             encoder_conv_kernel_size=cfg.model.encoder.conv_kernel_size,
             encoder_mha_num_heads=cfg.model.encoder.mha_num_heads,
             encoder_dropout=cfg.model.encoder.dropout,
+            encoder_subsampling_kernel_size1=cfg.model.encoder.subsampling_kernel_size1,
+            encoder_subsampling_stride1=cfg.model.encoder.subsampling_stride1,
+            encoder_subsampling_kernel_size2=cfg.model.encoder.subsampling_kernel_size2,
+            encoder_subsampling_stride2=cfg.model.encoder.subsampling_stride2,
+            encoder_num_previous_frames=cfg.model.encoder.num_previous_frames,
             embedding_size=cfg.model.predictor.embedding_size,
             predictor_hidden_size=cfg.model.predictor.hidden_size,
             predictor_num_layers=cfg.model.predictor.num_layers,
             jointnet_hidden_size=cfg.model.jointnet.hidden_size,
+            decoder_buffer_size=cfg.decoder.buffer_size,
         ).to(DEVICE)
         optimizer = torch.optim.Adam(model.parameters(), lr=cfg.train.lr, weight_decay=cfg.train.weight_decay)
         # scheduler = None
@@ -149,8 +155,16 @@ def main(cfg: DictConfig):
                     reduction="sum",
                 )
                 epoch_train_loss += loss.item()
-
-                bhyp_token_indices = model.greedy_inference(enc_inputs=benc_input, enc_input_lengths=benc_input_length)
+                if cfg.decoder.type == "streaming_greedy":
+                    bhyp_token_indices = model.streaming_greedy_inference(
+                        enc_inputs=benc_input, enc_input_lengths=benc_input_length
+                    )
+                elif cfg.decoder.type == "non_streaming_greedy":
+                    bhyp_token_indices = model.greedy_inference(
+                        enc_inputs=benc_input, enc_input_lengths=benc_input_length
+                    )
+                else:
+                    raise NotImplementedError
                 bans_token_indices = [
                     bpred_input[i, : bpred_input_length[i]].tolist() for i in range(bpred_input.shape[0])
                 ]
@@ -207,9 +221,16 @@ def main(cfg: DictConfig):
                     )
                     epoch_test_loss += loss.item()
 
-                    bhyp_token_indices = model.greedy_inference(
-                        enc_inputs=benc_input, enc_input_lengths=benc_input_length
-                    )
+                    if cfg.decoder.type == "streaming_greedy":
+                        bhyp_token_indices = model.streaming_greedy_inference(
+                            enc_inputs=benc_input, enc_input_lengths=benc_input_length
+                        )
+                    elif cfg.decoder.type == "non_streaming_greedy":
+                        bhyp_token_indices = model.greedy_inference(
+                            enc_inputs=benc_input, enc_input_lengths=benc_input_length
+                        )
+                    else:
+                        raise NotImplementedError
                     bans_token_indices = [
                         bpred_input[i, : bpred_input_length[i]].tolist() for i in range(bpred_input.shape[0])
                     ]

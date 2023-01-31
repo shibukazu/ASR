@@ -15,6 +15,11 @@ model:
     conv_kernel_size: 16
     mha_num_heads: 4
     dropout: 0
+    subsampling_kernel_size1: 3
+    subsampling_stride1: 2
+    subsampling_kernel_size2: 3
+    subsampling_stride2: 2
+    num_previous_frames: "all"
   predictor:
     embedding_size: 64
     hidden_size: 64
@@ -26,6 +31,10 @@ model:
     freq_mask_max_length: 30
     num_time_mask: 2
     time_mask_max_length: 40
+
+decoder:
+  type: "streaming_greedy"
+  buffer_size: 4
 
 train:
   num_epoch: 100
