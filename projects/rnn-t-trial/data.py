@@ -13,7 +13,7 @@ from tqdm import tqdm
 
 
 class YesNoDataset(torch.utils.data.Dataset):
-    def __init__(self, wav_dir_path, model_sample_rate):
+    def __init__(self, wav_dir_path, model_sample_rate, split):
         super().__init__()
 
         dataset = []
@@ -23,8 +23,15 @@ class YesNoDataset(torch.utils.data.Dataset):
         self.idx_to_token = {i: label for i, label in enumerate(self.tokens)}
         self.blank_idx = self.token_to_idx["<blank>"]
         self.pad_idx = self.token_to_idx["<pad>"]
-
-        for wav_file_path in glob.glob(wav_dir_path + "*.wav"):
+        all_wav_file_paths = glob.glob(wav_dir_path + "*.wav")
+        sorted(all_wav_file_paths)
+        if split == "train":
+            wav_file_paths = all_wav_file_paths[: int(len(all_wav_file_paths) * 0.8)]
+        elif split == "dev":
+            wav_file_paths = all_wav_file_paths[int(len(all_wav_file_paths) * 0.8) :]
+        else:
+            raise ValueError("Invalid Split")
+        for wav_file_path in wav_file_paths:
             file_name = os.path.splitext(os.path.basename(wav_file_path))[0]
             text_idx = []
             for c in file_name:
@@ -81,15 +88,6 @@ class YesNoDataset(torch.utils.data.Dataset):
             torch.tensor(y_len, dtype=torch.int32),
             audio_sec,
         )
-
-    def get_audio_sec(self, idx):
-        wav_file_path = self.dataset.iloc[idx, 0]
-        audio, sample_rate = torchaudio.load(wav_file_path)
-        audio = audio.flatten()
-        resampler = Resample(sample_rate, self.model_sample_rate)
-        resampled_audio = resampler(audio)
-
-        return len(resampled_audio) / self.model_sample_rate
 
 
 class LibriSpeechDataset(torch.utils.data.Dataset):
@@ -200,9 +198,6 @@ class LibriSpeechDataset(torch.utils.data.Dataset):
             audio_sec,
         )
 
-    def get_audio_sec(self, idx):
-        return self.audio_sec_dict[str(idx)]
-
     def extract_vocab(self, all_transcripts: List, vocab_file_path: str) -> None:
         print("Extracting vocab...")
         all_transcripts = " ".join(all_transcripts)
@@ -228,10 +223,12 @@ class LibriSpeechDataset(torch.utils.data.Dataset):
 
 
 class RandomTimeBatchSampler(torch.utils.data.Sampler):
-    def __init__(self, dataset, batch_sec):
+    def __init__(self, dataset, batch_sec, audio_sec_file_path):
         self.dataset = dataset
         self.batch_sec = batch_sec
         self.num_batches = 0
+        with open(audio_sec_file_path, "r") as f:
+            self.audio_sec_dict = json.load(f)
 
     def __iter__(self):
         bar = tqdm(total=len(self.dataset))
@@ -245,7 +242,7 @@ class RandomTimeBatchSampler(torch.utils.data.Sampler):
             sampled_sec = 0
             while sampled_sec < self.batch_sec and sampled_size < len(self.dataset):
                 batch.append(indices[sampled_size])
-                audio_sec = self.dataset.get_audio_sec(indices[sampled_size])
+                audio_sec = self.audio_sec_dict[str(indices[sampled_size])]
                 sampled_sec += audio_sec
                 sampled_size += 1
                 bar.update(1)
@@ -279,12 +276,13 @@ def get_dataloader(
     num_workers,
     pad_idx,
     pin_memory,
+    audio_sec_file_path,
 ):
     collate_fn = Collate(pad_idx).fn
 
     dataloader = torch.utils.data.DataLoader(
         dataset,
-        batch_sampler=RandomTimeBatchSampler(dataset, batch_sec),
+        batch_sampler=RandomTimeBatchSampler(dataset, batch_sec, audio_sec_file_path),
         num_workers=num_workers,
         collate_fn=collate_fn,
         pin_memory=pin_memory,

@@ -4,6 +4,7 @@ import torch
 from modules.encoder import CausalConformerEncoder, LSTMEncoder
 from modules.jointnet import JointNet
 from modules.predictor import Predictor
+from torchaudio.functional import rnnt_loss
 
 
 class LSTMModel(torch.nn.Module):
@@ -167,8 +168,16 @@ class CausalConformerModel(torch.nn.Module):
         padded_enc_output, subsampled_enc_input_lengths = self.encoder(padded_enc_input, enc_input_lengths)
         padded_pred_output, _ = self.predictor(padded_pred_input, pred_input_lengths)
         padded_output = self.jointnet(padded_enc_output, padded_pred_output)
-
-        return padded_output, subsampled_enc_input_lengths
+        print(padded_output.size(), padded_pred_input.size(), subsampled_enc_input_lengths, pred_input_lengths)
+        loss = rnnt_loss(
+            logits=padded_output,
+            targets=padded_pred_input,
+            logit_lengths=subsampled_enc_input_lengths.to(padded_output.device),
+            target_lengths=pred_input_lengths.to(padded_output.device),
+            blank=self.blank_idx,
+            reduction="sum"
+        )
+        return loss
 
     @torch.no_grad()
     def greedy_inference(self, enc_inputs, enc_input_lengths) -> List[List[int]]:

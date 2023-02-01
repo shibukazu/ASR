@@ -18,6 +18,14 @@ from tqdm import tqdm
 from util.mlflow import log_params_from_omegaconf_dict
 
 
+class DataParallel(torch.nn.DataParallel):
+    def __getattr__(self, name):
+        try:
+            return super().__getattr__(name)
+        except AttributeError:
+            return getattr(self.module, name)
+
+
 @hydra.main(version_base=None, config_path="conf", config_name=None)
 def main(cfg: DictConfig):
     CONF_NAME = HydraConfig.get().job.config_name
@@ -28,7 +36,7 @@ def main(cfg: DictConfig):
         experiment_id = mlflow.create_experiment(name=EXPERIMENT_NAME, artifact_location=ARTIFACT_LOCATION)
     else:
         experiment_id = experiment.experiment_id
-
+    torch.backends.cudnn.benchmark = False
     with mlflow.start_run(experiment_id=experiment_id) as mlflow_run:
         LOG_DIR = mlflow_run.info.artifact_uri
         config.dictConfig(logging_conf.config_generator(LOG_DIR))
@@ -41,22 +49,27 @@ def main(cfg: DictConfig):
         logger.info(f"Training on {DEVICE}.")
 
         if cfg.dataset.name == "YesNo":
-            dataset = YesNoDataset(
-                wav_dir_path="datasets/waves_yesno/",
-                model_sample_rate=16000,
-            )
-            train_dataset, dev_dataset = torch.utils.data.random_split(
-                dataset, [int(len(dataset) * 0.9), len(dataset) - int(len(dataset) * 0.9)]
-            )
+            train_dataset = YesNoDataset(wav_dir_path="datasets/waves_yesno/", model_sample_rate=16000, split="train")
+            dev_dataset = YesNoDataset(wav_dir_path="datasets/waves_yesno/", model_sample_rate=16000, split="dev")
             train_dataloader = get_dataloader(
-                train_dataset, batch_sec=cfg.train.batch_sec, num_workers=4, pad_idx=dataset.pad_idx, pin_memory=True
+                train_dataset,
+                batch_sec=cfg.train.batch_sec,
+                num_workers=4,
+                pad_idx=train_dataset.pad_idx,
+                pin_memory=True,
+                audio_sec_file_path="audio_secs/yesno_train_idx_to_audio_sec.json",
             )
             dev_dataloader = get_dataloader(
-                dev_dataset, batch_sec=cfg.train.batch_sec, num_workers=4, pad_idx=dataset.pad_idx, pin_memory=True
+                dev_dataset,
+                batch_sec=cfg.train.batch_sec,
+                num_workers=4,
+                pad_idx=train_dataset.pad_idx,
+                pin_memory=True,
+                audio_sec_file_path="audio_secs/yesno_dev_idx_to_audio_sec.json",
             )
-            blank_idx = dataset.blank_idx
-            vocab_size = len(dataset.idx_to_token)
-            idx_to_token = dataset.idx_to_token
+            blank_idx = train_dataset.blank_idx
+            vocab_size = len(train_dataset.idx_to_token)
+            idx_to_token = train_dataset.idx_to_token
         elif cfg.dataset.name == "Librispeech":
             spec_aug = SpecAug(
                 freq_mask_max_length=cfg.model.spec_aug.freq_mask_max_length,
@@ -120,7 +133,8 @@ def main(cfg: DictConfig):
             predictor_num_layers=cfg.model.predictor.num_layers,
             jointnet_hidden_size=cfg.model.jointnet.hidden_size,
             decoder_buffer_size=cfg.decoder.buffer_size,
-        ).to(DEVICE)
+        )
+        model = DataParallel(model).to(DEVICE)
         optimizer = torch.optim.Adam(
             model.parameters(),
             lr=cfg.train.optimize.lr,
@@ -143,27 +157,19 @@ def main(cfg: DictConfig):
             epoch_train_loss = 0
             accum_sec = 0
             bar = tqdm(total=len(train_dataset))
-            bar.set_description("Training")
+            bar.set_description("Training     ")
             for _, benc_input, bpred_input, benc_input_length, bpred_input_length, baudio_sec in train_dataloader:
                 accum_sec += sum(baudio_sec)
                 benc_input = benc_input.to(DEVICE)
                 bpred_input = bpred_input.to(DEVICE)
 
-                bpadded_output, bsubsampled_enc_input_length = model(
+                loss = model(
                     padded_enc_input=benc_input,
                     enc_input_lengths=benc_input_length,
                     padded_pred_input=bpred_input,
                     pred_input_lengths=bpred_input_length,
                 )
 
-                loss = rnnt_loss(
-                    logits=bpadded_output,
-                    targets=bpred_input,
-                    logit_lengths=bsubsampled_enc_input_length.to(DEVICE),
-                    target_lengths=bpred_input_length.to(DEVICE),
-                    blank=blank_idx,
-                    reduction="sum",
-                )
                 loss.backward()
                 epoch_train_loss += loss.item()
 
@@ -183,28 +189,20 @@ def main(cfg: DictConfig):
             epoch_dev_cer = 0
             epoch_dev_wer = 0
             bar = tqdm(total=len(dev_dataset))
-            bar.set_description("Validation")
+            bar.set_description("Validation   ")
             with torch.no_grad():
                 for _, benc_input, bpred_input, benc_input_length, bpred_input_length, baudio_sec in dev_dataloader:
                     benc_input = benc_input.to(DEVICE)
                     bpred_input = bpred_input.to(DEVICE)
 
-                    bpadded_output, bsubsampled_enc_input_length = model(
+                    loss = model(
                         padded_enc_input=benc_input,
                         enc_input_lengths=benc_input_length,
                         padded_pred_input=bpred_input,
                         pred_input_lengths=bpred_input_length,
                     )
-                    loss = rnnt_loss(
-                        logits=bpadded_output,
-                        targets=bpred_input,
-                        logit_lengths=bsubsampled_enc_input_length.to(DEVICE),
-                        target_lengths=bpred_input_length.to(DEVICE),
-                        blank=blank_idx,
-                        reduction="sum",
-                    )
-                    epoch_dev_loss += loss.item()
 
+                    epoch_dev_loss += loss.item()
                     bar.update(bpred_input.shape[0])
 
                     if i % 5 == 0:
