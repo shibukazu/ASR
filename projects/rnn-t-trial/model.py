@@ -168,14 +168,20 @@ class CausalConformerModel(torch.nn.Module):
         padded_enc_output, subsampled_enc_input_lengths = self.encoder(padded_enc_input, enc_input_lengths)
         padded_pred_output, _ = self.predictor(padded_pred_input, pred_input_lengths)
         padded_output = self.jointnet(padded_enc_output, padded_pred_output)
-        print(padded_output.size(), padded_pred_input.size(), subsampled_enc_input_lengths, pred_input_lengths)
+        # print(padded_output.size(), padded_pred_input.size(), subsampled_enc_input_lengths, pred_input_lengths)
+        # 各GPUにとって必要な部分のみ切り出す
+        max_subsampled_enc_input_length = subsampled_enc_input_lengths.max().item()
+        max_pred_input_length = pred_input_lengths.max().item()
+        padded_output = padded_output[:, :max_subsampled_enc_input_length, : max_pred_input_length + 1, :]
+        padded_pred_input = padded_pred_input[:, :max_pred_input_length]
+        # print(padded_output.shape)
         loss = rnnt_loss(
-            logits=padded_output,
-            targets=padded_pred_input,
+            logits=padded_output.contiguous(),
+            targets=padded_pred_input.contiguous(),
             logit_lengths=subsampled_enc_input_lengths.to(padded_output.device),
             target_lengths=pred_input_lengths.to(padded_output.device),
             blank=self.blank_idx,
-            reduction="sum"
+            reduction="sum",
         )
         return loss
 

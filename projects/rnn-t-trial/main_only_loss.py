@@ -169,7 +169,7 @@ def main(cfg: DictConfig):
                     padded_pred_input=bpred_input,
                     pred_input_lengths=bpred_input_length,
                 )
-
+                loss = loss.sum()
                 loss.backward()
                 epoch_train_loss += loss.item()
 
@@ -201,6 +201,7 @@ def main(cfg: DictConfig):
                         padded_pred_input=bpred_input,
                         pred_input_lengths=bpred_input_length,
                     )
+                    loss = loss.sum()
 
                     epoch_dev_loss += loss.item()
                     bar.update(bpred_input.shape[0])
