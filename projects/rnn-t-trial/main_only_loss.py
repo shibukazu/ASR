@@ -163,13 +163,21 @@ def main(cfg: DictConfig):
                 benc_input = benc_input.to(DEVICE)
                 bpred_input = bpred_input.to(DEVICE)
 
-                loss = model(
+                bpadded_output, bsubsampled_enc_input_length = model(
                     padded_enc_input=benc_input,
                     enc_input_lengths=benc_input_length,
                     padded_pred_input=bpred_input,
                     pred_input_lengths=bpred_input_length,
                 )
-                loss = loss.sum()
+
+                loss = rnnt_loss(
+                    logits=bpadded_output,
+                    targets=bpred_input,
+                    logit_lengths=bsubsampled_enc_input_length.to(DEVICE),
+                    target_lengths=bpred_input_length.to(DEVICE),
+                    blank=blank_idx,
+                    reduction="sum",
+                )
                 loss.backward()
                 epoch_train_loss += loss.item()
 
@@ -195,13 +203,21 @@ def main(cfg: DictConfig):
                     benc_input = benc_input.to(DEVICE)
                     bpred_input = bpred_input.to(DEVICE)
 
-                    loss = model(
+                    bpadded_output, bsubsampled_enc_input_length = model(
                         padded_enc_input=benc_input,
                         enc_input_lengths=benc_input_length,
                         padded_pred_input=bpred_input,
                         pred_input_lengths=bpred_input_length,
                     )
-                    loss = loss.sum()
+
+                    loss = rnnt_loss(
+                        logits=bpadded_output,
+                        targets=bpred_input,
+                        logit_lengths=bsubsampled_enc_input_length.to(DEVICE),
+                        target_lengths=bpred_input_length.to(DEVICE),
+                        blank=blank_idx,
+                        reduction="sum",
+                    )
 
                     epoch_dev_loss += loss.item()
                     bar.update(bpred_input.shape[0])
