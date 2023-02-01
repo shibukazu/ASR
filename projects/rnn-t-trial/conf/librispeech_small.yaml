@@ -13,7 +13,7 @@ model:
     num_conformer_blocks: 16
     ff_hidden_size: 144
     conv_hidden_size: 144
-    conv_kernel_size: 32
+    conv_kernel_size: 16 # non-causalの半分
     mha_num_heads: 4
     dropout: 0.1
     subsampling_kernel_size1: 3
@@ -39,8 +39,8 @@ decoder:
 
 train:
   num_epoch: 100
-  num_batch: 20
-  accum_sec: 180
+  batch_sec: 180
+  accum_sec: 1
   optimize:
     lr: 5
     warmup_steps: 10000
