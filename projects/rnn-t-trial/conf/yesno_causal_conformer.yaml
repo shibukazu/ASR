@@ -4,6 +4,10 @@ hydra:
 
 dataset:
   name: "YesNo"
+  train:
+    json_file_path: "./json/yesno_train.json"
+  dev:
+    json_file_path: "./json/yesno_dev.json"
 
 model:
   encoder:
@@ -32,9 +36,14 @@ model:
     num_time_mask: 2
     time_mask_max_length: 40
 
+tokenizer:
+  model_file_path: "./vocabs/yesno_train_bpe.model"
+
 decoder:
   type: "streaming_greedy"
   buffer_size: 4
+
+do_decode: true
 
 train:
   num_epoch: 100

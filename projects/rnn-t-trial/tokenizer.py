@@ -15,13 +15,16 @@ class SentencePieceTokenizer:
 
     @property
     def num_tokens(self):
-        # this includes idx for <s>, </s>, <unk>, <blank>
-        # this does not include idx for <pad> (-1)
+        # this includes idx for <s>, </s>, <unk>, <blank>, <pad>
         return self.sp.GetPieceSize()
 
     @property
     def blank_token_id(self):
         return self.sp.PieceToId("<blank>")
+
+    @property
+    def pad_token_id(self):
+        return self.sp.PieceToId("<pad>")
 
     def _normalize_text(self, text: str):
         return text.lower()
@@ -59,5 +62,5 @@ class SentencePieceTokenizer:
         spm.SentencePieceTrainer.Train(
             f"--input={transcription_file_path} --model_prefix={model_prefix}"
             + f" --vocab_size={num_tokens} --character_coverage={character_coverage}"
-            + f" --model_type={model_type} --control_symbols=<blank> --unk_id=1 --bos_id=2 --eos_id=3"
+            + f" --model_type={model_type} --control_symbols=<blank> --unk_id=1 --bos_id=2 --eos_id=3 --pad_id=4"
         )

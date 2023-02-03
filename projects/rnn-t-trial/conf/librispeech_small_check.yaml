@@ -5,9 +5,9 @@ hydra:
 dataset:
   name: "Librispeech"
   train:
-    json_file_path: "./json/librispeech_train-all-960.json"
+    json_file_path: "./json/librispeech_train-clean-100.json"
   dev:
-    json_file_path: "./json/librispeech_train-dev-other.json"
+    json_file_path: "./json/librispeech_train-dev-clean.json"
 
 model:
   encoder:

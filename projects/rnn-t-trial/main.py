@@ -5,17 +5,26 @@ import hydra
 import mlflow
 import torch
 from conf import logging_conf
-from data import LibriSpeechDataset, YesNoDataset
+from data import LibriSpeechDataset, YesNoDataset, get_dataloader
 from hydra.core.hydra_config import HydraConfig
 from model import CausalConformerModel
 from modules.scheduler import TransformerLR
 from modules.spec_aug import SpecAug
 from omegaconf import DictConfig
 from rich.logging import RichHandler
+from tokenizer import SentencePieceTokenizer
 from torchaudio.functional import rnnt_loss
 from torchmetrics.functional import char_error_rate, word_error_rate
 from tqdm import tqdm
 from util.mlflow import log_params_from_omegaconf_dict
+
+
+class DataParallel(torch.nn.DataParallel):
+    def __getattr__(self, name):
+        try:
+            return super().__getattr__(name)
+        except AttributeError:
+            return getattr(self.module, name)
 
 
 @hydra.main(version_base=None, config_path="conf", config_name=None)
@@ -29,6 +38,7 @@ def main(cfg: DictConfig):
     else:
         experiment_id = experiment.experiment_id
 
+    torch.backends.cudnn.benchmark = False
     with mlflow.start_run(experiment_id=experiment_id) as mlflow_run:
         LOG_DIR = mlflow_run.info.artifact_uri
         config.dictConfig(logging_conf.config_generator(LOG_DIR))
@@ -40,35 +50,19 @@ def main(cfg: DictConfig):
         DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         logger.info(f"Training on {DEVICE}.")
 
+        tokenizer = SentencePieceTokenizer(
+            model_file_path=cfg.tokenizer.model_file_path,
+        )
+        blank_idx = tokenizer.blank_token_id
+        vocab_size = tokenizer.num_tokens
         if cfg.dataset.name == "YesNo":
-            dataset = YesNoDataset(
-                wav_dir_path="datasets/waves_yesno/",
-                model_sample_rate=16000,
+            train_dataset = YesNoDataset(
+                json_file_path=cfg.dataset.train.json_file_path, resampling_rate=16000, tokenizer=tokenizer
             )
-            train_dataset, dev_dataset = torch.utils.data.random_split(
-                dataset, [int(len(dataset) * 0.9), len(dataset) - int(len(dataset) * 0.9)]
+            dev_dataset = YesNoDataset(
+                json_file_path=cfg.dataset.dev.json_file_path, resampling_rate=16000, tokenizer=tokenizer
             )
-            train_dataloader = torch.utils.data.DataLoader(
-                train_dataset,
-                batch_size=cfg.train.num_batch,
-                shuffle=True,
-                collate_fn=dataset.collate_fn,
-                drop_last=True,
-                num_workers=2,
-                pin_memory=True,
-            )
-            dev_dataloader = torch.utils.data.DataLoader(
-                dev_dataset,
-                batch_size=cfg.train.num_batch,
-                shuffle=False,
-                collate_fn=dataset.collate_fn,
-                drop_last=False,
-                num_workers=2,
-                pin_memory=True,
-            )
-            blank_idx = dataset.blank_idx
-            idx_to_token = dataset.idx_to_token
-            vocab_size = len(dataset.idx_to_token)
+
         elif cfg.dataset.name == "Librispeech":
             spec_aug = SpecAug(
                 freq_mask_max_length=cfg.model.spec_aug.freq_mask_max_length,
@@ -77,64 +71,60 @@ def main(cfg: DictConfig):
                 num_time_mask=cfg.model.spec_aug.num_time_mask,
             )
             train_dataset = LibriSpeechDataset(
-                root="datasets/",
-                split="train",
-                vocab_file_path="vocabs/librispeech_train_960h.json",
+                json_file_path=cfg.dataset.train.json_file_path,
+                resampling_rate=16000,
+                tokenizer=tokenizer,
                 spec_aug=spec_aug,
             )
             dev_dataset = LibriSpeechDataset(
-                root="datasets/",
-                split=cfg.dataset.dev_split,
-                vocab_file_path="vocabs/librispeech_train_960h.json",
-                spec_aug=None,
+                json_file_path=cfg.dataset.dev.json_file_path,
+                resampling_rate=16000,
+                tokenizer=tokenizer,
+                spec_aug=spec_aug,
             )
-
-            train_dataloader = torch.utils.data.DataLoader(
-                train_dataset,
-                batch_size=cfg.train.num_batch,
-                shuffle=True,
-                collate_fn=train_dataset.collate_fn,
-                drop_last=True,
-                num_workers=4,
-                pin_memory=True,
-            )
-            dev_dataloader = torch.utils.data.DataLoader(
-                dev_dataset,
-                batch_size=cfg.train.num_batch,
-                shuffle=True,
-                collate_fn=train_dataset.collate_fn,
-                drop_last=True,
-                num_workers=4,
-                pin_memory=True,
-            )
-            blank_idx = train_dataset.blank_idx
-            idx_to_token = train_dataset.idx_to_token
-            vocab_size = len(train_dataset.idx_to_token)
         else:
             raise NotImplementedError
-        torch.autograd.set_detect_anomaly(True)
-        model = CausalConformerModel(
-            vocab_size=vocab_size,
-            blank_idx=blank_idx,
-            encoder_input_size=cfg.model.encoder.input_size,
-            encoder_subsampled_input_size=cfg.model.encoder.subsampled_input_size,
-            encoder_num_conformer_blocks=cfg.model.encoder.num_conformer_blocks,
-            encoder_ff_hidden_size=cfg.model.encoder.ff_hidden_size,
-            encoder_conv_hidden_size=cfg.model.encoder.conv_hidden_size,
-            encoder_conv_kernel_size=cfg.model.encoder.conv_kernel_size,
-            encoder_mha_num_heads=cfg.model.encoder.mha_num_heads,
-            encoder_dropout=cfg.model.encoder.dropout,
-            encoder_subsampling_kernel_size1=cfg.model.encoder.subsampling_kernel_size1,
-            encoder_subsampling_stride1=cfg.model.encoder.subsampling_stride1,
-            encoder_subsampling_kernel_size2=cfg.model.encoder.subsampling_kernel_size2,
-            encoder_subsampling_stride2=cfg.model.encoder.subsampling_stride2,
-            encoder_num_previous_frames=cfg.model.encoder.num_previous_frames,
-            embedding_size=cfg.model.predictor.embedding_size,
-            predictor_hidden_size=cfg.model.predictor.hidden_size,
-            predictor_num_layers=cfg.model.predictor.num_layers,
-            jointnet_hidden_size=cfg.model.jointnet.hidden_size,
-            decoder_buffer_size=cfg.decoder.buffer_size,
-        ).to(DEVICE)
+
+        train_dataloader = get_dataloader(
+            train_dataset,
+            batch_sec=cfg.train.batch_sec,
+            num_workers=4,
+            pin_memory=True,
+            pad_idx=tokenizer.pad_token_id,
+        )
+        dev_dataloader = get_dataloader(
+            dev_dataset,
+            batch_sec=cfg.train.batch_sec,
+            num_workers=4,
+            pin_memory=True,
+            pad_idx=tokenizer.pad_token_id,
+        )
+
+        # torch.autograd.set_detect_anomaly(True)
+        model_args = {
+            "vocab_size": vocab_size,
+            "blank_idx": blank_idx,
+            "encoder_input_size": cfg.model.encoder.input_size,
+            "encoder_subsampled_input_size": cfg.model.encoder.subsampled_input_size,
+            "encoder_num_conformer_blocks": cfg.model.encoder.num_conformer_blocks,
+            "encoder_ff_hidden_size": cfg.model.encoder.ff_hidden_size,
+            "encoder_conv_hidden_size": cfg.model.encoder.conv_hidden_size,
+            "encoder_conv_kernel_size": cfg.model.encoder.conv_kernel_size,
+            "encoder_mha_num_heads": cfg.model.encoder.mha_num_heads,
+            "encoder_dropout": cfg.model.encoder.dropout,
+            "encoder_subsampling_kernel_size1": cfg.model.encoder.subsampling_kernel_size1,
+            "encoder_subsampling_stride1": cfg.model.encoder.subsampling_stride1,
+            "encoder_subsampling_kernel_size2": cfg.model.encoder.subsampling_kernel_size2,
+            "encoder_subsampling_stride2": cfg.model.encoder.subsampling_stride2,
+            "encoder_num_previous_frames": cfg.model.encoder.num_previous_frames,
+            "embedding_size": cfg.model.predictor.embedding_size,
+            "predictor_hidden_size": cfg.model.predictor.hidden_size,
+            "predictor_num_layers": cfg.model.predictor.num_layers,
+            "jointnet_hidden_size": cfg.model.jointnet.hidden_size,
+            "decoder_buffer_size": cfg.decoder.buffer_size,
+        }
+        model = CausalConformerModel(**model_args)
+        model = DataParallel(model).to(DEVICE)
         optimizer = torch.optim.Adam(
             model.parameters(),
             lr=cfg.train.optimize.lr,
@@ -149,16 +139,16 @@ def main(cfg: DictConfig):
         )
 
         NUM_EPOCH = cfg.train.num_epoch
-        min_train_wer = 1.0
+
         for i in range(1, NUM_EPOCH + 1):
             logger.info(f"Epoch {i} has started.")
 
             model.train()
             epoch_train_loss = 0
-            epoch_train_cer = 0
-            epoch_train_wer = 0
             accum_sec = 0
-            for benc_input, bpred_input, benc_input_length, bpred_input_length, baudio_sec in tqdm(train_dataloader):
+            bar = tqdm(total=len(train_dataset))
+            bar.set_description("Training     ")
+            for _, benc_input, bpred_input, benc_input_length, bpred_input_length, baudio_sec in train_dataloader:
                 accum_sec += sum(baudio_sec)
                 benc_input = benc_input.to(DEVICE)
                 bpred_input = bpred_input.to(DEVICE)
@@ -180,31 +170,8 @@ def main(cfg: DictConfig):
                 )
                 loss.backward()
                 epoch_train_loss += loss.item()
-                if cfg.decoder.type == "streaming_greedy":
-                    bhyp_token_indices = model.streaming_greedy_inference(
-                        enc_inputs=benc_input, enc_input_lengths=benc_input_length
-                    )
-                elif cfg.decoder.type == "non_streaming_greedy":
-                    bhyp_token_indices = model.greedy_inference(
-                        enc_inputs=benc_input, enc_input_lengths=benc_input_length
-                    )
-                else:
-                    raise NotImplementedError
-                bans_token_indices = [
-                    bpred_input[i, : bpred_input_length[i]].tolist() for i in range(bpred_input.shape[0])
-                ]
-                bhyp_text = [
-                    "".join([idx_to_token[idx] for idx in hyp_token_indices])
-                    for hyp_token_indices in bhyp_token_indices
-                ]
-                bans_text = [
-                    "".join([idx_to_token[idx] for idx in ans_token_indices])
-                    for ans_token_indices in bans_token_indices
-                ]
 
-                # char_error_rate and word_error_rate are automatically reduced by average
-                epoch_train_cer += char_error_rate(bhyp_text, bans_text) * benc_input.shape[0]
-                epoch_train_wer += word_error_rate(bhyp_text, bans_text) * benc_input.shape[0]
+                bar.update(bpred_input.shape[0])
 
                 if accum_sec > cfg.train.accum_sec:
                     optimizer.step()
@@ -214,19 +181,15 @@ def main(cfg: DictConfig):
 
             logger.info(f"Train loss: {epoch_train_loss / len(train_dataset)}")
             mlflow.log_metric("train_loss", epoch_train_loss / len(train_dataset), step=i)
-            logger.info(f"Train CER: {epoch_train_cer / len(train_dataset)}")
-            mlflow.log_metric("train_cer", epoch_train_cer / len(train_dataset), step=i)
-            logger.info(f"Train WER: {epoch_train_wer / len(train_dataset)}")
-            mlflow.log_metric("train_wer", epoch_train_wer / len(train_dataset), step=i)
-
-            min_train_wer = min(min_train_wer, epoch_train_wer / len(train_dataset))
 
             model.eval()
             epoch_dev_loss = 0
             epoch_dev_cer = 0
             epoch_dev_wer = 0
+            bar = tqdm(total=len(dev_dataset))
+            bar.set_description("Validation   ")
             with torch.no_grad():
-                for benc_input, bpred_input, benc_input_length, bpred_input_length, baudio_sec in tqdm(dev_dataloader):
+                for _, benc_input, bpred_input, benc_input_length, bpred_input_length, baudio_sec in dev_dataloader:
                     benc_input = benc_input.to(DEVICE)
                     bpred_input = bpred_input.to(DEVICE)
 
@@ -236,6 +199,7 @@ def main(cfg: DictConfig):
                         padded_pred_input=bpred_input,
                         pred_input_lengths=bpred_input_length,
                     )
+
                     loss = rnnt_loss(
                         logits=bpadded_output,
                         targets=bpred_input,
@@ -244,60 +208,50 @@ def main(cfg: DictConfig):
                         blank=blank_idx,
                         reduction="sum",
                     )
+
                     epoch_dev_loss += loss.item()
+                    bar.update(bpred_input.shape[0])
 
-                    if cfg.decoder.type == "streaming_greedy":
-                        bhyp_token_indices = model.streaming_greedy_inference(
-                            enc_inputs=benc_input, enc_input_lengths=benc_input_length
-                        )
-                    elif cfg.decoder.type == "non_streaming_greedy":
-                        bhyp_token_indices = model.greedy_inference(
-                            enc_inputs=benc_input, enc_input_lengths=benc_input_length
-                        )
-                    else:
-                        raise NotImplementedError
-                    bans_token_indices = [
-                        bpred_input[i, : bpred_input_length[i]].tolist() for i in range(bpred_input.shape[0])
-                    ]
-                    bhyp_text = [
-                        "".join([idx_to_token[idx] for idx in hyp_token_indices])
-                        for hyp_token_indices in bhyp_token_indices
-                    ]
-                    bans_text = [
-                        "".join([idx_to_token[idx] for idx in ans_token_indices])
-                        for ans_token_indices in bans_token_indices
-                    ]
+                    if i >= 20 and i % 5 == 0 and cfg.do_decode:
+                        if cfg.decoder.type == "streaming_greedy":
+                            bhyp_token_indices = model.streaming_greedy_inference(
+                                enc_inputs=benc_input, enc_input_lengths=benc_input_length
+                            )
+                        elif cfg.decoder.type == "non_streaming_greedy":
+                            bhyp_token_indices = model.greedy_inference(
+                                enc_inputs=benc_input, enc_input_lengths=benc_input_length
+                            )
+                        else:
+                            raise NotImplementedError
+                        bans_token_indices = [
+                            bpred_input[i, : bpred_input_length[i]].tolist() for i in range(bpred_input.shape[0])
+                        ]
+                        bhyp_text = tokenizer.batch_token_ids_to_text(bhyp_token_indices)
+                        bans_text = tokenizer.batch_token_ids_to_text(bans_token_indices)
 
-                    epoch_dev_cer += char_error_rate(bhyp_text, bans_text) * benc_input.shape[0]
-                    epoch_dev_wer += word_error_rate(bhyp_text, bans_text) * benc_input.shape[0]
+                        epoch_dev_cer += char_error_rate(bhyp_text, bans_text) * benc_input.shape[0]
+                        epoch_dev_wer += word_error_rate(bhyp_text, bans_text) * benc_input.shape[0]
 
-                mlflow.log_metric("dev_loss", epoch_dev_loss / len(dev_dataset), step=i)
                 logger.info(f"Dev loss: {epoch_dev_loss / len(dev_dataset)}")
-                mlflow.log_metric("dev_cer", epoch_dev_cer / len(dev_dataset), step=i)
-                logger.info(f"Dev CER: {epoch_dev_cer / len(dev_dataset)}")
-                mlflow.log_metric("dev_wer", epoch_dev_wer / len(dev_dataset), step=i)
-                logger.info(f"Dev WER: {epoch_dev_wer / len(dev_dataset)}")
-            logger.info(f"Epoch {i} has finished.")
+                mlflow.log_metric("dev_loss", epoch_dev_loss / len(dev_dataset), step=i)
 
-            if i % 10 == 0:
-                checkpoint_dir = f"cpts/{EXPERIMENT_NAME}/{mlflow_run.info.run_id}"
-                os.makedirs(checkpoint_dir, exist_ok=True)
+                if i >= 20 and i % 5 == 0 and cfg.do_decode:
+                    mlflow.log_metric("dev_cer", epoch_dev_cer / len(dev_dataset), step=i)
+                    logger.info(f"Dev CER: {epoch_dev_cer / len(dev_dataset)}")
+                    mlflow.log_metric("dev_wer", epoch_dev_wer / len(dev_dataset), step=i)
+                    logger.info(f"Dev WER: {epoch_dev_wer / len(dev_dataset)}")
+
+            if i % 5 == 0:
                 torch.save(
                     {
-                        "model": model.state_dict(),
+                        "model": model.module.state_dict(),
+                        "model_args": model_args,
                         "optimizer": optimizer.state_dict(),
                         "scheduler": scheduler.state_dict(),
                         "dev_loss": epoch_dev_loss / len(dev_dataset),
-                        "dev_cer": epoch_dev_cer / len(dev_dataset),
-                        "dev_wer": epoch_dev_wer / len(dev_dataset),
                     },
-                    os.path.join(checkpoint_dir, f"model_{cfg.dataset.name}_{i}.pth"),
+                    os.path.join(mlflow_run.info.artifact_uri, f"model_{i}.pth"),
                 )
-                mlflow.log_artifact(os.path.join(checkpoint_dir, f"model_{cfg.dataset.name}_{i}.pth"))
-
-        if min_train_wer > 0.8:
-            # learning failed
-            exit(1)
 
 
 if __name__ == "__main__":
