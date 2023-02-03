@@ -4,7 +4,14 @@ hydra:
 
 dataset:
   name: "Librispeech"
-  dev_split: "dev-other"
+  train:
+    split: "train-960h"
+    vocab_file_path: "vocabs/librispeech_train_960h.json"
+    audio_sec_file_path: "audio_secs/librispeech_train_960h_idx_to_audio_sec.json"
+  dev:
+    split: "dev-other"
+    vocab_file_path: "vocabs/librispeech_train_960h.json"
+    audio_sec_file_path: "audio_secs/librispeech_dev_other_idx_to_audio_sec.json"
 
 model:
   encoder:
@@ -39,7 +46,7 @@ decoder:
 
 train:
   num_epoch: 100
-  batch_sec: 180
+  batch_sec: 150
   accum_sec: 1
   optimize:
     lr: 5

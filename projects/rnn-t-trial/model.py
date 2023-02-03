@@ -248,7 +248,7 @@ class CausalConformerModel(torch.nn.Module):
                                     pred_input, torch.tensor([1]), hidden=hidden
                                 )
 
-                            if num_token_indices > 10:
+                            if num_token_indices >= 5:
                                 break
             batch_hyp_token_indices.append(hyp_token_indices)
         return batch_hyp_token_indices

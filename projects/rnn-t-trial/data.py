@@ -104,7 +104,13 @@ class LibriSpeechDataset(torch.utils.data.Dataset):
         split:
         train, dev, test, dev-test
         """
-        if split == "train":
+        if split == "train-100h":
+            self.dataset = torchaudio.datasets.LIBRISPEECH(os.path.join(root, "librispeech"), url="train-clean-100")
+        elif split == "train-360h":
+            self.dataset = torchaudio.datasets.LIBRISPEECH(os.path.join(root, "librispeech"), url="train-clean-360")
+        elif split == "train-500h":
+            self.dataset = torchaudio.datasets.LIBRISPEECH(os.path.join(root, "librispeech"), url="train-other-500")
+        elif split == "train-960h":
             dataset_train_clean_100 = torchaudio.datasets.LIBRISPEECH(
                 os.path.join(root, "librispeech"), url="train-clean-100"
             )

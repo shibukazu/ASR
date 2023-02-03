@@ -13,6 +13,7 @@ from modules.spec_aug import SpecAug
 from omegaconf import DictConfig
 from rich.logging import RichHandler
 from torchaudio.functional import rnnt_loss
+from torchmetrics.functional import char_error_rate, word_error_rate
 from tqdm import tqdm
 from util.mlflow import log_params_from_omegaconf_dict
 
@@ -68,6 +69,7 @@ def main(cfg: DictConfig):
             )
             blank_idx = train_dataset.blank_idx
             vocab_size = len(train_dataset.idx_to_token)
+            idx_to_token = train_dataset.idx_to_token
         elif cfg.dataset.name == "Librispeech":
             spec_aug = SpecAug(
                 freq_mask_max_length=cfg.model.spec_aug.freq_mask_max_length,
@@ -108,6 +110,7 @@ def main(cfg: DictConfig):
             )
             blank_idx = train_dataset.blank_idx
             vocab_size = len(train_dataset.idx_to_token)
+            idx_to_token = train_dataset.idx_to_token
         else:
             raise NotImplementedError
         # torch.autograd.set_detect_anomaly(True)
@@ -193,6 +196,8 @@ def main(cfg: DictConfig):
 
             model.eval()
             epoch_dev_loss = 0
+            epoch_dev_cer = 0
+            epoch_dev_wer = 0
             bar = tqdm(total=len(dev_dataset))
             bar.set_description("Validation   ")
             with torch.no_grad():
@@ -219,8 +224,40 @@ def main(cfg: DictConfig):
                     epoch_dev_loss += loss.item()
                     bar.update(bpred_input.shape[0])
 
+                    if i % 5 == 0:
+                        if cfg.decoder.type == "streaming_greedy":
+                            bhyp_token_indices = model.streaming_greedy_inference(
+                                enc_inputs=benc_input, enc_input_lengths=benc_input_length
+                            )
+                        elif cfg.decoder.type == "non_streaming_greedy":
+                            bhyp_token_indices = model.greedy_inference(
+                                enc_inputs=benc_input, enc_input_lengths=benc_input_length
+                            )
+                        else:
+                            raise NotImplementedError
+                        bans_token_indices = [
+                            bpred_input[i, : bpred_input_length[i]].tolist() for i in range(bpred_input.shape[0])
+                        ]
+                        bhyp_text = [
+                            "".join([idx_to_token[idx] for idx in hyp_token_indices])
+                            for hyp_token_indices in bhyp_token_indices
+                        ]
+                        bans_text = [
+                            "".join([idx_to_token[idx] for idx in ans_token_indices])
+                            for ans_token_indices in bans_token_indices
+                        ]
+
+                        epoch_dev_cer += char_error_rate(bhyp_text, bans_text) * benc_input.shape[0]
+                        epoch_dev_wer += word_error_rate(bhyp_text, bans_text) * benc_input.shape[0]
+
                 logger.info(f"Dev loss: {epoch_dev_loss / len(dev_dataset)}")
                 mlflow.log_metric("dev_loss", epoch_dev_loss / len(dev_dataset), step=i)
+
+                if i % 5 == 0:
+                    mlflow.log_metric("dev_cer", epoch_dev_cer / len(dev_dataset), step=i)
+                    logger.info(f"Dev CER: {epoch_dev_cer / len(dev_dataset)}")
+                    mlflow.log_metric("dev_wer", epoch_dev_wer / len(dev_dataset), step=i)
+                    logger.info(f"Dev WER: {epoch_dev_wer / len(dev_dataset)}")
 
             if i % 5 == 0:
                 torch.save(
@@ -229,6 +266,8 @@ def main(cfg: DictConfig):
                         "optimizer": optimizer.state_dict(),
                         "scheduler": scheduler.state_dict(),
                         "dev_loss": epoch_dev_loss / len(dev_dataset),
+                        "dev_cer": epoch_dev_cer / len(dev_dataset),
+                        "dev_wer": epoch_dev_wer / len(dev_dataset),
                     },
                     os.path.join(mlflow_run.info.artifact_uri, f"model_{cfg.dataset.name}_{i}.pth"),
                 )
