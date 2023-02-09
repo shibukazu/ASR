@@ -1,4 +1,5 @@
 import torch
+from modules import torchaudio_conformer
 from modules.conformer.conformer import CausalConformerBlock
 from modules.subsampling import Conv2DSubSampling
 
@@ -77,3 +78,52 @@ class CausalConformerEncoder(torch.nn.Module):
             output = conformer_block(output, subsampled_input_lengths)
 
         return output, subsampled_input_lengths
+
+
+class TorchAudioConformerEncoder(torch.nn.Module):
+    def __init__(
+        self,
+        input_size,
+        subsampled_input_size,
+        num_conformer_blocks,
+        ff_hidden_size,
+        conv_hidden_size,
+        conv_kernel_size,
+        mha_num_heads,
+        dropout,
+        subsampling_kernel_size1,
+        subsampling_stride1,
+        subsampling_kernel_size2,
+        subsampling_stride2,
+        num_previous_frames,
+    ):
+        super().__init__()
+        self.subsampling = Conv2DSubSampling(
+            input_size,
+            subsampled_input_size,
+            subsampling_kernel_size1,
+            subsampling_stride1,
+            subsampling_kernel_size2,
+            subsampling_stride2,
+        )
+        self.fc = torch.nn.Linear(subsampled_input_size, subsampled_input_size)
+        self.dropout = torch.nn.Dropout(dropout)
+        self.conformer_blocks = torchaudio_conformer.Conformer(
+            input_dim=subsampled_input_size,
+            num_heads=mha_num_heads,
+            ffn_dim=ff_hidden_size,
+            num_layers=num_conformer_blocks,
+            depthwise_conv_kernel_size=conv_kernel_size,
+            dropout=dropout,
+            use_group_norm=False,
+            convolution_first=True,
+        )
+
+    def forward(self, padded_input, input_lengths):
+        subsampled_padded_input, subsampled_input_lengths = self.subsampling(padded_input, input_lengths)
+        output = subsampled_padded_input
+        output = self.fc(output)
+        output = self.dropout(output)
+        output, output_lengths = self.conformer_blocks(output, subsampled_input_lengths)
+
+        return output, output_lengths  # ここの長さ同じ？ -> 同じ

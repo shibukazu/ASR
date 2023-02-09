@@ -7,7 +7,10 @@ dataset:
   train:
     json_file_path: "./json/librispeech_train-all-960.json"
   dev:
-    json_file_path: "./json/librispeech_train-dev-other.json"
+    json_file_path: "./json/librispeech_dev-other.json"
+
+tokenizer:
+  model_file_path: "./vocabs/librispeech_1024_bpe.model"
 
 model:
   encoder:
@@ -44,7 +47,7 @@ do_decode: false
 
 train:
   num_epoch: 100
-  batch_sec: 150
+  batch_sec: 50
   accum_sec: 1
   optimize:
     lr: 5

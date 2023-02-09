@@ -37,7 +37,7 @@ model:
     time_mask_max_length: 40
 
 tokenizer:
-  model_file_path: "./vocabs/yesno_train_bpe.model"
+  model_file_path: "./vocabs/yesno_bpe.model"
 
 decoder:
   type: "streaming_greedy"

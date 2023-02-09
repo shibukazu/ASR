@@ -17,10 +17,10 @@ class Predictor(torch.nn.Module):
         padded_input_prepended = torch.nn.functional.pad(padded_input, (1, 0, 0, 0), value=self.blank_idx)  # [B, U+1]
         input_lengths_prepended = (input_lengths + 1).tolist()  # [B]
         padded_embedding = self.embedding(padded_input_prepended)  # [B, U+1, D]
+        self.lstm.flatten_parameters()
         packed_padded_embedding = torch.nn.utils.rnn.pack_padded_sequence(
             padded_embedding, input_lengths_prepended, batch_first=True, enforce_sorted=False
         )
-        self.lstm.flatten_parameters()
         packed_padded_output, hidden = self.lstm(packed_padded_embedding, hidden)
         # total_length is for DataParalell
         padded_output, _ = torch.nn.utils.rnn.pad_packed_sequence(

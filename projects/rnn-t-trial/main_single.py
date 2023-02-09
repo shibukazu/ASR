@@ -1,4 +1,3 @@
-import math
 import os
 from logging import config, getLogger
 
@@ -8,7 +7,7 @@ import torch
 from conf import logging_conf
 from data import LibriSpeechDataset, YesNoDataset, get_dataloader
 from hydra.core.hydra_config import HydraConfig
-from model import CausalConformerModel, TorchAudioConformerModel
+from model import CausalConformerModel
 from modules.scheduler import TransformerLR
 from modules.spec_aug import SpecAug
 from omegaconf import DictConfig
@@ -18,14 +17,6 @@ from torchaudio.functional import rnnt_loss
 from torchmetrics.functional import char_error_rate, word_error_rate
 from tqdm import tqdm
 from util.mlflow import log_params_from_omegaconf_dict
-
-
-class DataParallel(torch.nn.DataParallel):
-    def __getattr__(self, name):
-        try:
-            return super().__getattr__(name)
-        except AttributeError:
-            return getattr(self.module, name)
 
 
 @hydra.main(version_base=None, config_path="conf", config_name=None)
@@ -124,13 +115,7 @@ def main(cfg: DictConfig):
             "jointnet_hidden_size": cfg.model.jointnet.hidden_size,
             "decoder_buffer_size": cfg.decoder.buffer_size,
         }
-        if cfg.model.name == "CausalConformer":
-            model = CausalConformerModel(**model_args)
-        elif cfg.model.name == "TorchAudioConformer":
-            model = TorchAudioConformerModel(**model_args)
-        else:
-            raise NotImplementedError
-        model = DataParallel(model).to(DEVICE)
+        model = CausalConformerModel(**model_args).to(DEVICE)
         optimizer = torch.optim.Adam(
             model.parameters(),
             lr=cfg.train.optimize.lr,
@@ -143,71 +128,24 @@ def main(cfg: DictConfig):
             d_model=cfg.model.encoder.subsampled_input_size,
             warmup_steps=cfg.train.optimize.warmup_steps,
         )
+        scaler = torch.cuda.amp.GradScaler()
 
         NUM_EPOCH = cfg.train.num_epoch
 
         for i in range(1, NUM_EPOCH + 1):
-            torch.cuda.empty_cache()
             logger.info(f"Epoch {i} has started.")
 
             model.train()
             epoch_train_loss = 0
             accum_sec = 0
             bar = tqdm(total=len(train_dataset))
-            bar.set_description("Training  ")
+            bar.set_description("Training     ")
             for _, benc_input, bpred_input, benc_input_length, bpred_input_length, baudio_sec in train_dataloader:
                 accum_sec += sum(baudio_sec)
                 benc_input = benc_input.to(DEVICE)
                 bpred_input = bpred_input.to(DEVICE)
 
-                bpadded_output, bsubsampled_enc_input_length = model(
-                    padded_enc_input=benc_input,
-                    enc_input_lengths=benc_input_length,
-                    padded_pred_input=bpred_input,
-                    pred_input_lengths=bpred_input_length,
-                )
-
-                loss = rnnt_loss(
-                    logits=bpadded_output,
-                    targets=bpred_input,
-                    logit_lengths=bsubsampled_enc_input_length.to(DEVICE),
-                    target_lengths=bpred_input_length.to(DEVICE),
-                    blank=blank_idx,
-                    reduction="sum",
-                )
-                loss = loss / bpred_input.shape[0]
-                loss.backward()
-                epoch_train_loss += loss.item() * bpred_input.shape[0]
-
-                for param_group in optimizer.param_groups:
-                    bar.set_postfix({"loss": loss.item(), "lr": param_group["lr"]})
-                bar.update(bpred_input.shape[0])
-
-                if accum_sec > cfg.train.accum_sec:
-                    grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), cfg.train.optimize.max_grad_norm)
-                    if math.isnan(grad_norm):
-                        logger.error("grad norm is nan. Do not update model.")
-                        logger.error(f"loss value: {loss.item()}")
-                    else:
-                        optimizer.step()
-                        scheduler.step()
-                        optimizer.zero_grad()
-                        accum_sec = 0
-
-            logger.info(f"Train loss: {epoch_train_loss / len(train_dataset)}")
-            mlflow.log_metric("train_loss", epoch_train_loss / len(train_dataset), step=i)
-
-            model.eval()
-            epoch_dev_loss = 0
-            epoch_dev_cer = 0
-            epoch_dev_wer = 0
-            bar = tqdm(total=len(dev_dataset))
-            bar.set_description("Validation")
-            with torch.no_grad():
-                for _, benc_input, bpred_input, benc_input_length, bpred_input_length, baudio_sec in dev_dataloader:
-                    benc_input = benc_input.to(DEVICE)
-                    bpred_input = bpred_input.to(DEVICE)
-
+                with torch.cuda.amp.autocast():
                     bpadded_output, bsubsampled_enc_input_length = model(
                         padded_enc_input=benc_input,
                         enc_input_lengths=benc_input_length,
@@ -223,9 +161,62 @@ def main(cfg: DictConfig):
                         blank=blank_idx,
                         reduction="sum",
                     )
-                    loss = loss / bpred_input.shape[0]
 
-                    epoch_dev_loss += loss.item() * bpred_input.shape[0]
+                    loss = loss / benc_input.shape[0]
+                    epoch_train_loss += loss.item() * benc_input.shape[0]
+                scaler.scale(loss).backward()
+                # loss.backward()
+
+                bar.update(bpred_input.shape[0])
+
+                if accum_sec > cfg.train.accum_sec:
+                    # optimizer.step()
+                    scaler.step(optimizer)
+                    scale = scaler.get_scale()
+                    scaler.update()
+                    new_scale = scaler.get_scale()
+                    # refer:
+                    # https://discuss.pytorch.org/t/optimizer-step-before-lr-scheduler-step-error-using-gradscaler/92930/9
+                    skip_lr_scheduler = scale > new_scale
+                    if not skip_lr_scheduler:
+                        scheduler.step()
+                    optimizer.zero_grad()
+                    accum_sec = 0
+
+            logger.info(f"Train loss: {epoch_train_loss / len(train_dataset)}")
+            mlflow.log_metric("train_loss", epoch_train_loss / len(train_dataset), step=i)
+
+            model.eval()
+            epoch_dev_loss = 0
+            epoch_dev_cer = 0
+            epoch_dev_wer = 0
+            bar = tqdm(total=len(dev_dataset))
+            bar.set_description("Validation   ")
+            with torch.no_grad():
+                for _, benc_input, bpred_input, benc_input_length, bpred_input_length, baudio_sec in dev_dataloader:
+                    benc_input = benc_input.to(DEVICE)
+                    bpred_input = bpred_input.to(DEVICE)
+
+                    with torch.cuda.amp.autocast():
+                        bpadded_output, bsubsampled_enc_input_length = model(
+                            padded_enc_input=benc_input,
+                            enc_input_lengths=benc_input_length,
+                            padded_pred_input=bpred_input,
+                            pred_input_lengths=bpred_input_length,
+                        )
+
+                        loss = rnnt_loss(
+                            logits=bpadded_output,
+                            targets=bpred_input,
+                            logit_lengths=bsubsampled_enc_input_length.to(DEVICE),
+                            target_lengths=bpred_input_length.to(DEVICE),
+                            blank=blank_idx,
+                            reduction="sum",
+                        )
+                        loss = loss / benc_input.shape[0]
+                        epoch_dev_loss += loss.item() * benc_input.shape[0]
+
+                    bar.update(bpred_input.shape[0])
 
                     if i >= 20 and i % 5 == 0 and cfg.do_decode:
                         if cfg.decoder.type == "streaming_greedy":
@@ -246,8 +237,6 @@ def main(cfg: DictConfig):
 
                         epoch_dev_cer += char_error_rate(bhyp_text, bans_text) * benc_input.shape[0]
                         epoch_dev_wer += word_error_rate(bhyp_text, bans_text) * benc_input.shape[0]
-
-                    bar.update(bpred_input.shape[0])
 
                 logger.info(f"Dev loss: {epoch_dev_loss / len(dev_dataset)}")
                 mlflow.log_metric("dev_loss", epoch_dev_loss / len(dev_dataset), step=i)

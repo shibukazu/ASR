@@ -13,7 +13,7 @@ class CausalMultiHeadAttentionModule(torch.nn.Module):
     ):
         super().__init__()
         # don't use positional encoding in causal conformer
-        self.layer_norm = normalization.CausalLayerNormalization()
+        self.layer_norm = normalization.TimewiseLayerNormalization()
         self.multi_head_attention = torch.nn.MultiheadAttention(
             embed_dim=input_size,
             num_heads=num_heads,
@@ -57,6 +57,45 @@ class CausalMultiHeadAttentionModule(torch.nn.Module):
             ),
             # FIXME: key_padding_mask cause NaN loss
             # key_padding_mask=self._create_key_padding_mask(x_lengths, x.size(1)).to(x.device),
+        )
+        x = self.dropout(x)
+        return x
+
+
+class MultiHeadAttentionModule(torch.nn.Module):
+    def __init__(
+        self,
+        input_size,
+        num_heads,
+        dropout,
+    ):
+        super().__init__()
+        # don't use positional encoding in causal conformer
+        self.layer_norm = torch.nn.LayerNorm(input_size)
+        self.multi_head_attention = torch.nn.MultiheadAttention(
+            embed_dim=input_size,
+            num_heads=num_heads,
+            dropout=dropout,
+            batch_first=True,
+        )
+        self.dropout = torch.nn.Dropout(dropout)
+
+    def _create_key_padding_mask(self, input_lengths, max_length):
+        # input_lengths: [B]
+        # output: bynary mask [B, T]
+        mask = torch.arange(max_length)[None, :] >= input_lengths[:, None]
+        return mask
+
+    def forward(self, x, x_lengths):
+        # x: [B, T, D]
+        # output: [B, T, D]
+        x = self.layer_norm(x)
+        x, _ = self.multi_head_attention(
+            query=x,
+            key=x,
+            value=x,
+            key_padding_mask=self._create_key_padding_mask(x_lengths, x.size(1)).to(x.device),
+            need_weights=False,
         )
         x = self.dropout(x)
         return x

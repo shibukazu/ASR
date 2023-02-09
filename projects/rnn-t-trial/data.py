@@ -187,6 +187,38 @@ class RandomTimeBatchSampler(torch.utils.data.Sampler):
         return self.num_batches
 
 
+class RandomTimeFixedBatchSampler(torch.utils.data.Sampler):
+    def __init__(self, dataset, batch_sec):
+        self.dataset = dataset
+        self.batch_sec = batch_sec
+        self.batches = []
+
+        bar = tqdm(total=len(self.dataset))
+        bar.set_description("Batch Prepare")
+        indices = list(range(len(self.dataset)))
+        random.shuffle(indices)
+        sampled_size = 0
+        while sampled_size < len(self.dataset):
+            batch = []
+            sampled_sec = 0
+            while sampled_size < len(self.dataset):
+                audio_sec = self.dataset.get_audio_sec(indices[sampled_size])
+                if audio_sec + sampled_sec > self.batch_sec:
+                    break
+                batch.append(indices[sampled_size])
+                sampled_sec += audio_sec
+                sampled_size += 1
+                bar.update(1)
+            self.batches.append(batch)
+
+    def __iter__(self):
+        random.shuffle(self.batches)
+        return iter(self.batches)
+
+    def __len__(self):
+        return len(self.batches)
+
+
 def get_dataloader(
     dataset,
     batch_sec,
@@ -206,7 +238,7 @@ def get_dataloader(
 
     dataloader = torch.utils.data.DataLoader(
         dataset,
-        batch_sampler=RandomTimeBatchSampler(dataset, batch_sec),
+        batch_sampler=RandomTimeFixedBatchSampler(dataset, batch_sec),
         num_workers=num_workers,
         collate_fn=collate_fn,
         pin_memory=pin_memory,
