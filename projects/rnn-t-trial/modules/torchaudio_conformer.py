@@ -284,7 +284,7 @@ class Conformer(torch.nn.Module):
                     output lengths, with shape `(B,)` and i-th element representing
                     number of valid frames for i-th batch element in output frames.
         """
-        encoder_padding_mask = _lengths_to_padding_mask(lengths)
+        encoder_padding_mask = _lengths_to_padding_mask(lengths).to(input.device)
 
         x = input.transpose(0, 1)
         for layer in self.conformer_layers:

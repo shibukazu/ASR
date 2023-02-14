@@ -21,7 +21,7 @@ class CausalConformerBlock(torch.nn.Module):
             input_size, mha_num_heads, dropout, num_previous_frames=num_previous_frames
         )
         self.ff_module2 = feed_forward.CausalFeedForwardModule(input_size, ff_hidden_size, dropout)
-        self.layer_norm = normalization.TimewiseLayerNormalization()
+        self.layer_norm = normalization.TimewiseLayerNormalization(input_size)
 
     def forward(self, x, x_lengths):
         # x: [B, T, D]
@@ -62,7 +62,7 @@ class ConformerBlock(torch.nn.Module):
             input_size, mha_num_heads, dropout, num_previous_frames=num_previous_frames
         )
         self.ff_module2 = feed_forward.FeedForwardModule(input_size, ff_hidden_size, dropout)
-        self.layer_norm = normalization.TimewiseLayerNormalization()
+        self.layer_norm = normalization.TimewiseLayerNormalization(input_size)
 
     def forward(self, x, x_lengths):
         # x: [B, T, D]

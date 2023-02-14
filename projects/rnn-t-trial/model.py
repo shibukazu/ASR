@@ -5,6 +5,8 @@ from modules.encoder import CausalConformerEncoder, LSTMEncoder, TorchAudioConfo
 from modules.jointnet import JointNet
 from modules.predictor import Predictor
 
+from tqdm import tqdm
+
 
 class LSTMModel(torch.nn.Module):
     def __init__(
@@ -220,7 +222,7 @@ class CausalConformerModel(torch.nn.Module):
             buffer = []
             pred_input = torch.tensor([[self.blank_idx]], dtype=torch.int32).to(enc_input.device)
             pred_output, hidden = self.predictor.forward_wo_prepend(pred_input, torch.tensor([1]), hidden=None)
-            for i in range(5, enc_input.shape[0]):
+            for i in tqdm(range(5, enc_input.shape[0])):
                 if NUM_PREVIOUS_FRAMES == "all":
                     buffer.append(enc_input[: i + 1])
                 else:
@@ -378,7 +380,7 @@ class TorchAudioConformerModel(torch.nn.Module):
             buffer = []
             pred_input = torch.tensor([[self.blank_idx]], dtype=torch.int32).to(enc_input.device)
             pred_output, hidden = self.predictor.forward_wo_prepend(pred_input, torch.tensor([1]), hidden=None)
-            for i in range(5, enc_input.shape[0]):
+            for i in tqdm(range(5, enc_input.shape[0])):
                 if NUM_PREVIOUS_FRAMES == "all":
                     buffer.append(enc_input[: i + 1])
                 else:

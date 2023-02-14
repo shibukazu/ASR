@@ -9,12 +9,11 @@ from conf import logging_conf
 from data import LibriSpeechDataset, YesNoDataset, get_dataloader
 from hydra.core.hydra_config import HydraConfig
 from model import CausalConformerModel, TorchAudioConformerModel
-from modules.scheduler import TransformerLR
 from modules.spec_aug import SpecAug
 from omegaconf import DictConfig
 from rich.logging import RichHandler
 from tokenizer import SentencePieceTokenizer
-from torchaudio.functional import rnnt_loss
+from torchaudio.transforms import RNNTLoss
 from torchmetrics.functional import char_error_rate, word_error_rate
 from tqdm import tqdm
 from util.mlflow import log_params_from_omegaconf_dict
@@ -138,23 +137,24 @@ def main(cfg: DictConfig):
             betas=(cfg.train.optimize.beta1, cfg.train.optimize.beta2),
             eps=cfg.train.optimize.eps,
         )
-        scheduler = TransformerLR(
+        scheduler = torch.optim.lr_scheduler.LambdaLR(
             optimizer,
-            d_model=cfg.model.encoder.subsampled_input_size,
-            warmup_steps=cfg.train.optimize.warmup_steps,
+            lambda s: cfg.model.encoder.subsampled_input_size**-0.5
+            * min((s + 1) ** -0.5, (s + 1) * cfg.train.optimize.warmup_steps**-1.5),
         )
+        criterion = RNNTLoss(blank=blank_idx, reduction="sum")
 
         NUM_EPOCH = cfg.train.num_epoch
+        num_steps = 0
 
         for i in range(1, NUM_EPOCH + 1):
             torch.cuda.empty_cache()
-            logger.info(f"Epoch {i} has started.")
 
             model.train()
             epoch_train_loss = 0
             accum_sec = 0
             bar = tqdm(total=len(train_dataset))
-            bar.set_description("Training  ")
+            bar.set_description(f"Train Epoch {i}  ")
             for _, benc_input, bpred_input, benc_input_length, bpred_input_length, baudio_sec in train_dataloader:
                 accum_sec += sum(baudio_sec)
                 benc_input = benc_input.to(DEVICE)
@@ -166,21 +166,18 @@ def main(cfg: DictConfig):
                     padded_pred_input=bpred_input,
                     pred_input_lengths=bpred_input_length,
                 )
-
-                loss = rnnt_loss(
+                loss = criterion(
                     logits=bpadded_output,
                     targets=bpred_input,
                     logit_lengths=bsubsampled_enc_input_length.to(DEVICE),
                     target_lengths=bpred_input_length.to(DEVICE),
-                    blank=blank_idx,
-                    reduction="sum",
                 )
                 loss = loss / bpred_input.shape[0]
                 loss.backward()
                 epoch_train_loss += loss.item() * bpred_input.shape[0]
 
                 for param_group in optimizer.param_groups:
-                    bar.set_postfix({"loss": loss.item(), "lr": param_group["lr"]})
+                    bar.set_postfix({"loss": loss.item(), "lr": param_group["lr"], "step": num_steps})
                 bar.update(bpred_input.shape[0])
 
                 if accum_sec > cfg.train.accum_sec:
@@ -193,6 +190,7 @@ def main(cfg: DictConfig):
                         scheduler.step()
                         optimizer.zero_grad()
                         accum_sec = 0
+                        num_steps += 1
 
             logger.info(f"Train loss: {epoch_train_loss / len(train_dataset)}")
             mlflow.log_metric("train_loss", epoch_train_loss / len(train_dataset), step=i)
@@ -202,7 +200,7 @@ def main(cfg: DictConfig):
             epoch_dev_cer = 0
             epoch_dev_wer = 0
             bar = tqdm(total=len(dev_dataset))
-            bar.set_description("Validation")
+            bar.set_description(f"Valid Epoch {i}")
             with torch.no_grad():
                 for _, benc_input, bpred_input, benc_input_length, bpred_input_length, baudio_sec in dev_dataloader:
                     benc_input = benc_input.to(DEVICE)
@@ -215,19 +213,17 @@ def main(cfg: DictConfig):
                         pred_input_lengths=bpred_input_length,
                     )
 
-                    loss = rnnt_loss(
+                    loss = criterion(
                         logits=bpadded_output,
                         targets=bpred_input,
                         logit_lengths=bsubsampled_enc_input_length.to(DEVICE),
                         target_lengths=bpred_input_length.to(DEVICE),
-                        blank=blank_idx,
-                        reduction="sum",
                     )
                     loss = loss / bpred_input.shape[0]
 
                     epoch_dev_loss += loss.item() * bpred_input.shape[0]
 
-                    if i >= 20 and i % 5 == 0 and cfg.do_decode:
+                    if i >= 30 and i % 5 == 0 and cfg.do_decode:
                         if cfg.decoder.type == "streaming_greedy":
                             bhyp_token_indices = model.streaming_greedy_inference(
                                 enc_inputs=benc_input, enc_input_lengths=benc_input_length

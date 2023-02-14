@@ -10,16 +10,16 @@ dataset:
     json_file_path: "./json/librispeech_dev-other.json"
 
 tokenizer:
-  model_file_path: "./vocabs/librispeech_1024_bpe.model"
+  model_file_path: "./vocabs/librispeech_char.model"
 
 model:
   name: "CausalConformer"
   encoder:
     input_size: 80
-    subsampled_input_size: 256
+    subsampled_input_size: 144
     num_conformer_blocks: 16
-    ff_hidden_size: 1024
-    conv_hidden_size: 256
+    ff_hidden_size: 144
+    conv_hidden_size: 144
     conv_kernel_size: 16 # non-causalの半分
     mha_num_heads: 4
     dropout: 0.1
@@ -29,15 +29,15 @@ model:
     subsampling_stride2: 2
     num_previous_frames: "all"
   predictor:
-    embedding_size: 300
-    hidden_size: 300
+    embedding_size: 320
+    hidden_size: 320
     num_layers: 1
   jointnet:
-    hidden_size: 300
+    hidden_size: 320
   spec_aug:
     num_freq_mask: 2
     freq_mask_max_length: 30
-    num_time_mask: 2
+    num_time_mask: 10
     time_mask_max_length: 40
 
 decoder:
@@ -47,13 +47,13 @@ decoder:
 do_decode: false
 
 train:
-  num_epoch: 70
-  batch_sec: 180
-  accum_sec: 1800
+  num_epoch: 100
+  batch_sec: 450
+  accum_sec: 6000
   optimize:
     max_grad_norm: 5.0
-    lr: 5.0
-    warmup_steps: 25000
+    lr: 1.0
+    warmup_steps: 10000
     weight_decay: 0.000001
     eps: 0.000000001
     beta1: 0.9

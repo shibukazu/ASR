@@ -34,6 +34,7 @@ class CausalBatchNormalization(torch.nn.Module):
 class TimewiseBatchNormalization(torch.nn.Module):
     def __init__(
         self,
+        input_size,
         eps=1e-8,
         affine=True,
     ):
@@ -42,8 +43,8 @@ class TimewiseBatchNormalization(torch.nn.Module):
         self.affine = affine
         # NOTE: サイズ1で正しいか？
         if self.affine:
-            self.gamma = torch.nn.Parameter(torch.ones(1))
-            self.beta = torch.nn.Parameter(torch.zeros(1))
+            self.gamma = torch.nn.Parameter(torch.ones(input_size))
+            self.beta = torch.nn.Parameter(torch.zeros(input_size))
 
     def forward(self, x):
         # x: [B, D, T]
@@ -56,7 +57,9 @@ class TimewiseBatchNormalization(torch.nn.Module):
         time_and_chan_wise_std = time_and_chan_wise_std + self.eps
         normalized_x = (x - time_and_chan_wise_mean) / time_and_chan_wise_std
         if self.affine:
+            normalized_x = normalized_x.transpose(1, 2)
             normalized_x = normalized_x * self.gamma + self.beta
+            normalized_x = normalized_x.transpose(1, 2)
         return normalized_x
 
 
@@ -95,6 +98,7 @@ class CausalLayerNormalization(torch.nn.Module):
 class TimewiseLayerNormalization(torch.nn.Module):
     def __init__(
         self,
+        input_size,
         eps=1e-8,
         affine=True,
     ):
@@ -103,8 +107,8 @@ class TimewiseLayerNormalization(torch.nn.Module):
         self.affine = affine
         # NOTE: サイズ1で正しいか？
         if self.affine:
-            self.gamma = torch.nn.Parameter(torch.ones(1))
-            self.beta = torch.nn.Parameter(torch.zeros(1))
+            self.gamma = torch.nn.Parameter(torch.ones(input_size))
+            self.beta = torch.nn.Parameter(torch.zeros(input_size))
 
     def forward(self, x):
         # x: [B, D, T]
@@ -117,5 +121,7 @@ class TimewiseLayerNormalization(torch.nn.Module):
         time_and_batch_wise_std = time_and_batch_wise_std + self.eps
         normalized_x = (x - time_and_batch_wise_mean) / time_and_batch_wise_std
         if self.affine:
+            normalized_x = normalized_x.transpose(1, 2)
             normalized_x = normalized_x * self.gamma + self.beta
+            normalized_x = normalized_x.transpose(1, 2)
         return normalized_x

@@ -16,9 +16,9 @@ model:
   name: "CausalConformer"
   encoder:
     input_size: 80
-    subsampled_input_size: 144
-    num_conformer_blocks: 12
-    ff_hidden_size: 144
+    subsampled_input_size: 256
+    num_conformer_blocks: 16
+    ff_hidden_size: 1024
     conv_hidden_size: 144
     conv_kernel_size: 15 # non-causalの半分
     mha_num_heads: 4
@@ -29,11 +29,11 @@ model:
     subsampling_stride2: 2
     num_previous_frames: "all"
   predictor:
-    embedding_size: 256
-    hidden_size: 256
+    embedding_size: 300
+    hidden_size: 300
     num_layers: 1
   jointnet:
-    hidden_size: 256
+    hidden_size: 300
   spec_aug:
     num_freq_mask: 2
     freq_mask_max_length: 30
@@ -47,14 +47,14 @@ decoder:
 do_decode: false
 
 train:
-  num_epoch: 50
-  batch_sec: 150
-  accum_sec: 300
+  num_epoch: 100
+  batch_sec: 200
+  accum_sec: 400
   optimize:
     max_grad_norm: 5.0
-    lr: 0.1
-    warmup_steps: 10000
-    weight_decay: 0.000001
+    lr: 5.0
+    warmup_steps: 25000
+    weight_decay: 0.001
     eps: 0.000000001
     beta1: 0.9
     beta2: 0.98

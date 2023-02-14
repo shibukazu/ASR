@@ -13,7 +13,7 @@ class CausalMultiHeadAttentionModule(torch.nn.Module):
     ):
         super().__init__()
         # don't use positional encoding in causal conformer
-        self.layer_norm = normalization.TimewiseLayerNormalization()
+        self.layer_norm = normalization.TimewiseLayerNormalization(input_size)
         self.multi_head_attention = torch.nn.MultiheadAttention(
             embed_dim=input_size,
             num_heads=num_heads,

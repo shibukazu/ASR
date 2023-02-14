@@ -36,7 +36,7 @@ class CausalConv1d(torch.nn.Conv1d):
 class CausalConvolutionModule(torch.nn.Module):
     def __init__(self, input_channels, hidden_channels, depthwise_kernel_size, dropout):
         super().__init__()
-        self.layer_norm = normalization.TimewiseLayerNormalization()
+        self.layer_norm = normalization.TimewiseLayerNormalization(input_channels)
         # pointwiseは常にCausal
         self.pointwise_conv1 = torch.nn.Conv1d(
             in_channels=input_channels,
@@ -60,7 +60,7 @@ class CausalConvolutionModule(torch.nn.Module):
             groups=hidden_channels,  # 各チャネルごとに畳み込みを行う
             bias=True,
         )
-        self.batch_norm = normalization.TimewiseBatchNormalization()
+        self.batch_norm = normalization.TimewiseBatchNormalization(hidden_channels)
         self.swish = torch.nn.SiLU()
         # pointwiseは常にCausal
         self.pointwise_conv2 = torch.nn.Conv1d(
