@@ -49,7 +49,7 @@ do_decode: false
 
 train:
   num_epoch: 70
-  batch_sec: 100
+  batch_sec: 150
   accum_sec: 300
   optimize:
     max_grad_norm: 5.0

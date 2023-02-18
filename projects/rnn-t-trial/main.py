@@ -5,6 +5,7 @@ from logging import config, getLogger
 import hydra
 import mlflow
 import torch
+import torchaudio
 from conf import logging_conf
 from data import LibriSpeechDataset, YesNoDataset, get_dataloader
 from hydra.core.hydra_config import HydraConfig
@@ -13,7 +14,6 @@ from modules.spec_aug import SpecAug
 from omegaconf import DictConfig
 from rich.logging import RichHandler
 from tokenizer import SentencePieceTokenizer
-from torchaudio.transforms import RNNTLoss
 from torchmetrics.functional import char_error_rate, word_error_rate
 from tqdm import tqdm
 from util.mlflow import log_params_from_omegaconf_dict
@@ -142,7 +142,9 @@ def main(cfg: DictConfig):
             lambda s: cfg.model.encoder.subsampled_input_size**-0.5
             * min((s + 1) ** -0.5, (s + 1) * cfg.train.optimize.warmup_steps**-1.5),
         )
-        criterion = RNNTLoss(blank=blank_idx, reduction="sum")
+
+        rnnt_criterion = torchaudio.transforms.RNNTLoss(blank=blank_idx, reduction="sum")
+        ctc_criterion = torch.nn.CTCLoss(blank=blank_idx, reduction="sum")
 
         NUM_EPOCH = cfg.train.num_epoch
         num_steps = 0
@@ -160,18 +162,29 @@ def main(cfg: DictConfig):
                 benc_input = benc_input.to(DEVICE)
                 bpred_input = bpred_input.to(DEVICE)
 
-                bpadded_output, bsubsampled_enc_input_length = model(
+                bpadded_output, bpadded_ctc_log_probs, bsubsampled_enc_input_length = model(
                     padded_enc_input=benc_input,
                     enc_input_lengths=benc_input_length,
                     padded_pred_input=bpred_input,
                     pred_input_lengths=bpred_input_length,
                 )
-                loss = criterion(
+                # rnnt loss
+                rnnt_loss = rnnt_criterion(
                     logits=bpadded_output,
                     targets=bpred_input,
                     logit_lengths=bsubsampled_enc_input_length.to(DEVICE),
                     target_lengths=bpred_input_length.to(DEVICE),
                 )
+                # ctc loss
+                ctc_loss = ctc_criterion(
+                    log_probs=bpadded_ctc_log_probs.transpose(0, 1),
+                    targets=bpred_input,
+                    input_lengths=bsubsampled_enc_input_length.to(DEVICE),
+                    target_lengths=bpred_input_length.to(DEVICE),
+                )
+
+                loss = rnnt_loss + 0.3 * ctc_loss
+
                 loss = loss / bpred_input.shape[0]
                 loss.backward()
                 epoch_train_loss += loss.item() * bpred_input.shape[0]
@@ -206,24 +219,33 @@ def main(cfg: DictConfig):
                     benc_input = benc_input.to(DEVICE)
                     bpred_input = bpred_input.to(DEVICE)
 
-                    bpadded_output, bsubsampled_enc_input_length = model(
+                    bpadded_output, bpadded_ctc_log_probs, bsubsampled_enc_input_length = model(
                         padded_enc_input=benc_input,
                         enc_input_lengths=benc_input_length,
                         padded_pred_input=bpred_input,
                         pred_input_lengths=bpred_input_length,
                     )
-
-                    loss = criterion(
+                    # rnnt loss
+                    rnnt_loss = rnnt_criterion(
                         logits=bpadded_output,
                         targets=bpred_input,
                         logit_lengths=bsubsampled_enc_input_length.to(DEVICE),
                         target_lengths=bpred_input_length.to(DEVICE),
                     )
+                    # ctc loss
+                    ctc_loss = ctc_criterion(
+                        log_probs=bpadded_ctc_log_probs.transpose(0, 1),
+                        targets=bpred_input,
+                        input_lengths=bsubsampled_enc_input_length.to(DEVICE),
+                        target_lengths=bpred_input_length.to(DEVICE),
+                    )
+
+                    loss = rnnt_loss + 0.3 * ctc_loss
                     loss = loss / bpred_input.shape[0]
 
                     epoch_dev_loss += loss.item() * bpred_input.shape[0]
 
-                    if i >= 30 and i % 5 == 0 and cfg.do_decode:
+                    if i >= 10 and i % 5 == 0 and cfg.do_decode:
                         if cfg.decoder.type == "streaming_greedy":
                             bhyp_token_indices = model.streaming_greedy_inference(
                                 enc_inputs=benc_input, enc_input_lengths=benc_input_length
@@ -248,7 +270,7 @@ def main(cfg: DictConfig):
                 logger.info(f"Dev loss: {epoch_dev_loss / len(dev_dataset)}")
                 mlflow.log_metric("dev_loss", epoch_dev_loss / len(dev_dataset), step=i)
 
-                if i >= 20 and i % 5 == 0 and cfg.do_decode:
+                if i >= 10 and i % 5 == 0 and cfg.do_decode:
                     mlflow.log_metric("dev_cer", epoch_dev_cer / len(dev_dataset), step=i)
                     logger.info(f"Dev CER: {epoch_dev_cer / len(dev_dataset)}")
                     mlflow.log_metric("dev_wer", epoch_dev_wer / len(dev_dataset), step=i)

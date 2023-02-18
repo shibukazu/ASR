@@ -45,7 +45,7 @@ decoder:
   type: "non_streaming_greedy"
   buffer_size: 4
 
-do_decode: false
+do_decode: true
 
 train:
   num_epoch: 70

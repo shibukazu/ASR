@@ -1,10 +1,10 @@
 from typing import List
 
 import torch
+import torchaudio
 from modules.encoder import CausalConformerEncoder, LSTMEncoder, TorchAudioConformerEncoder
 from modules.jointnet import JointNet
 from modules.predictor import Predictor
-
 from tqdm import tqdm
 
 
@@ -47,6 +47,9 @@ class LSTMModel(torch.nn.Module):
             hidden_size=jointnet_hidden_size,
             vocab_size=vocab_size,
         )
+
+        self.rnnt_loss = torchaudio.transforms.RNNTLoss(blank=blank_idx, reduction="sum")
+        self.ctc_loss = torch.nn.CTCLoss(reduction="sum", blank=self.blank_idx)
 
     def forward(
         self,
@@ -159,6 +162,8 @@ class CausalConformerModel(torch.nn.Module):
             vocab_size=vocab_size,
         )
 
+        self.ctc_ff = torch.nn.Linear(encoder_subsampled_input_size, vocab_size)
+
     def forward(
         self,
         padded_enc_input,
@@ -169,7 +174,12 @@ class CausalConformerModel(torch.nn.Module):
         padded_enc_output, subsampled_enc_input_lengths = self.encoder(padded_enc_input, enc_input_lengths)
         padded_pred_output, _ = self.predictor(padded_pred_input, pred_input_lengths)
         padded_output = self.jointnet(padded_enc_output, padded_pred_output)
-        return padded_output, subsampled_enc_input_lengths
+
+        # For CTC loss
+        padded_ctc_logits = self.ctc_ff(padded_enc_output)
+        padded_ctc_log_probs = torch.nn.functional.log_softmax(padded_ctc_logits, dim=-1)
+
+        return padded_output, padded_ctc_log_probs, subsampled_enc_input_lengths
 
     @torch.no_grad()
     def greedy_inference(self, enc_inputs, enc_input_lengths) -> List[List[int]]:
@@ -317,6 +327,8 @@ class TorchAudioConformerModel(torch.nn.Module):
             vocab_size=vocab_size,
         )
 
+        self.ctc_ff = torch.nn.Linear(encoder_subsampled_input_size, vocab_size)
+
     def forward(
         self,
         padded_enc_input,
@@ -327,7 +339,12 @@ class TorchAudioConformerModel(torch.nn.Module):
         padded_enc_output, subsampled_enc_input_lengths = self.encoder(padded_enc_input, enc_input_lengths)
         padded_pred_output, _ = self.predictor(padded_pred_input, pred_input_lengths)
         padded_output = self.jointnet(padded_enc_output, padded_pred_output)
-        return padded_output, subsampled_enc_input_lengths
+
+        # For CTC loss
+        padded_ctc_logits = self.ctc_ff(padded_enc_output)
+        padded_ctc_log_probs = torch.nn.functional.log_softmax(padded_ctc_logits, dim=-1)
+
+        return padded_output, padded_ctc_log_probs, subsampled_enc_input_lengths
 
     @torch.no_grad()
     def greedy_inference(self, enc_inputs, enc_input_lengths) -> List[List[int]]:
@@ -335,13 +352,9 @@ class TorchAudioConformerModel(torch.nn.Module):
         # enc_input_lengths: 1D tensor (batch)
         # output: 2D List (batch, hyp_len)
         batch_hyp_tokens = []
+        enc_outputs, subsampled_input_lengths = self.encoder(enc_inputs, enc_input_lengths)
         for i, (enc_input, enc_input_length) in enumerate(zip(enc_inputs, enc_input_lengths)):
-            if enc_input.size(0) > enc_input_length:
-                enc_input = enc_input[:enc_input_length, :]
-
-            enc_output, _ = self.encoder(
-                enc_input.unsqueeze(0), torch.tensor([enc_input.size(0)])
-            )  # [1, subsampled_enc_input_length, output_size]
+            enc_output = enc_outputs[i, : subsampled_input_lengths[i], :]
             pred_input = torch.tensor([[self.blank_idx]], dtype=torch.int32).to(enc_output.device)
             pred_output, hidden = self.predictor.forward_wo_prepend(pred_input, torch.tensor([1]), hidden=None)
             # [1, 1, output_size]
