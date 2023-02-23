@@ -36,7 +36,7 @@ class CausalConv1d(torch.nn.Conv1d):
 class CausalConvolutionModule(torch.nn.Module):
     def __init__(self, input_channels, hidden_channels, depthwise_kernel_size, dropout):
         super().__init__()
-        self.layer_norm = normalization.TimewiseLayerNormalization(input_channels)
+        self.layer_norm1 = normalization.CausalLayerNormalization(input_channels)
         # pointwiseは常にCausal
         self.pointwise_conv1 = torch.nn.Conv1d(
             in_channels=input_channels,
@@ -60,7 +60,7 @@ class CausalConvolutionModule(torch.nn.Module):
             groups=hidden_channels,  # 各チャネルごとに畳み込みを行う
             bias=True,
         )
-        self.batch_norm = normalization.TimewiseBatchNormalization(hidden_channels)
+        self.layer_norm2 = normalization.CausalLayerNormalization(hidden_channels)
         self.swish = torch.nn.SiLU()
         # pointwiseは常にCausal
         self.pointwise_conv2 = torch.nn.Conv1d(
@@ -78,11 +78,11 @@ class CausalConvolutionModule(torch.nn.Module):
     def forward(self, x):
         # x: [B, T, D]
         x = x.transpose(1, 2)  # [B, D, T]
-        x = self.layer_norm(x)  # [B, D, T]
+        x = self.layer_norm1(x)  # [B, D, T]
         x = self.pointwise_conv1(x)  # [B, 2D, T]
         x = self.glu(x)  # [B, D, T]
         x = self.depthwise_conv(x)  # [B, D, T]
-        x = self.batch_norm(x)  # [B, D, T]
+        x = self.layer_norm2(x)  # [B, D, T]
         x = self.swish(x)  # [B, D, T]
         x = self.pointwise_conv2(x)  # [B, D, T]
         x = self.dropout(x)  # [B, D, T]

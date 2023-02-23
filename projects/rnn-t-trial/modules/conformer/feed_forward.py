@@ -6,7 +6,7 @@ from . import normalization
 class CausalFeedForwardModule(torch.nn.Module):
     def __init__(self, input_size, hidden_size, dropout):
         super().__init__()
-        self.layer_norm = normalization.TimewiseLayerNormalization(input_size)
+        self.layer_norm = normalization.CausalLayerNormalization(input_size)
         self.fc1 = torch.nn.Linear(input_size, hidden_size, bias=True)
         self.swish = torch.nn.SiLU()
         self.dropout1 = torch.nn.Dropout(dropout)

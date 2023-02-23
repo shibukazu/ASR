@@ -187,20 +187,16 @@ class CausalConformerModel(torch.nn.Module):
         # enc_input_lengths: 1D tensor (batch)
         # output: 2D List (batch, hyp_len)
         batch_hyp_tokens = []
+        enc_outputs, subsampled_enc_input_lengths = self.encoder(enc_inputs, enc_input_lengths)
         for i, (enc_input, enc_input_length) in enumerate(zip(enc_inputs, enc_input_lengths)):
-            if enc_input.size(0) > enc_input_length:
-                enc_input = enc_input[:enc_input_length, :]
-
-            enc_output, _ = self.encoder(
-                enc_input.unsqueeze(0), torch.tensor([enc_input.size(0)])
-            )  # [1, subsampled_enc_input_length, output_size]
+            enc_output = enc_outputs[i, : subsampled_enc_input_lengths[i]]
             pred_input = torch.tensor([[self.blank_idx]], dtype=torch.int32).to(enc_output.device)
             pred_output, hidden = self.predictor.forward_wo_prepend(pred_input, torch.tensor([1]), hidden=None)
             # [1, 1, output_size]
             timestamp = 0
             hyp_tokens = []
-            while timestamp < enc_output.size(1):
-                enc_output_at_timestamp = enc_output[0, timestamp]
+            while timestamp < enc_output.size(0):
+                enc_output_at_timestamp = enc_output[timestamp]
                 logits = self.jointnet(enc_output_at_timestamp.view(1, 1, -1), pred_output)
                 pred_token = logits.argmax(dim=-1)
                 if pred_token != self.blank_idx:
@@ -232,7 +228,7 @@ class CausalConformerModel(torch.nn.Module):
             buffer = []
             pred_input = torch.tensor([[self.blank_idx]], dtype=torch.int32).to(enc_input.device)
             pred_output, hidden = self.predictor.forward_wo_prepend(pred_input, torch.tensor([1]), hidden=None)
-            for i in tqdm(range(5, enc_input.shape[0])):
+            for i in range(5, enc_input.shape[0]):
                 if NUM_PREVIOUS_FRAMES == "all":
                     buffer.append(enc_input[: i + 1])
                 else:
