@@ -56,6 +56,7 @@ def main(cfg: DictConfig):
             model_file_path=cfg.tokenizer.model_file_path,
         )
         blank_idx = tokenizer.blank_token_id
+        bos_idx = tokenizer.bos_token_id
         eos_idx = tokenizer.eos_token_id
         vocab_size = tokenizer.num_tokens
         if cfg.dataset.name == "YesNo":
@@ -107,6 +108,7 @@ def main(cfg: DictConfig):
         model_args = {
             "vocab_size": vocab_size,
             "blank_idx": blank_idx,
+            "bos_idx": bos_idx,
             "eos_idx": eos_idx,
             "encoder_input_size": cfg.model.encoder.input_size,
             "encoder_subsampled_input_size": cfg.model.encoder.subsampled_input_size,

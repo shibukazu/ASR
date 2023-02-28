@@ -123,6 +123,7 @@ class CausalConformerModel(torch.nn.Module):
         predictor_num_layers,
         jointnet_hidden_size,
         blank_idx,
+        bos_idx,
         eos_idx,
         decoder_buffer_size,
         is_fused_softmax,
@@ -158,7 +159,7 @@ class CausalConformerModel(torch.nn.Module):
             embedding_size=embedding_size,
             hidden_size=predictor_hidden_size,
             num_layers=predictor_num_layers,
-            blank_idx=blank_idx,
+            bos_idx=bos_idx,
         )
 
         self.jointnet = JointNet(
@@ -200,7 +201,7 @@ class CausalConformerModel(torch.nn.Module):
         enc_outputs, subsampled_enc_input_lengths = self.encoder(enc_inputs, enc_input_lengths)
         for i, (enc_input, enc_input_length) in enumerate(zip(enc_inputs, enc_input_lengths)):
             enc_output = enc_outputs[i, : subsampled_enc_input_lengths[i]]
-            pred_input = torch.tensor([[self.blank_idx]], dtype=torch.int32).to(enc_output.device)
+            pred_input = torch.tensor([[self.bos_idx]], dtype=torch.int32).to(enc_output.device)
             pred_output, hidden = self.predictor.forward_wo_prepend(pred_input, torch.tensor([1]), hidden=None)
             # [1, 1, output_size]
             timestamp = 0
@@ -239,7 +240,7 @@ class CausalConformerModel(torch.nn.Module):
                 enc_input = enc_input[:enc_input_length, :]
             hyp_token_indices = []
             buffer = []
-            pred_input = torch.tensor([[self.blank_idx]], dtype=torch.int32).to(enc_input.device)
+            pred_input = torch.tensor([[self.bos_idx]], dtype=torch.int32).to(enc_input.device)
             pred_output, hidden = self.predictor.forward_wo_prepend(pred_input, torch.tensor([1]), hidden=None)
             for i in range(5, enc_input.shape[0]):
                 if is_detect_eos:

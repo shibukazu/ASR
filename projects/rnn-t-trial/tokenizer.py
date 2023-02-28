@@ -23,6 +23,10 @@ class SentencePieceTokenizer:
         return self.sp.PieceToId("<blank>")
 
     @property
+    def bos_token_id(self):
+        return self.sp.PieceToId("<s>")
+
+    @property
     def eos_token_id(self):
         return self.sp.PieceToId("</s>")
 

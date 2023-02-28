@@ -71,8 +71,18 @@ class CausalConformerEncoder(torch.nn.Module):
             ]
         )
 
+    def normalization(self, padded_input):
+        # padded_input: [B, T, D]
+        # normalize for each feature dim within each utterance
+        mean = padded_input.mean(dim=1, keepdim=True)
+        std = padded_input.std(dim=1, keepdim=True)
+        normalized_padded_input = (padded_input - mean) / (std + 1e-5)
+
+        return normalized_padded_input
+
     def forward(self, padded_input, input_lengths):
-        subsampled_padded_input, subsampled_input_lengths = self.subsampling(padded_input, input_lengths)
+        normalized_padded_input = self.normalization(padded_input)
+        subsampled_padded_input, subsampled_input_lengths = self.subsampling(normalized_padded_input, input_lengths)
         output = subsampled_padded_input
         output = self.fc(output)
         output = self.dropout(output)
