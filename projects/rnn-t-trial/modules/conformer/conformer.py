@@ -13,15 +13,21 @@ class CausalConformerBlock(torch.nn.Module):
         mha_num_heads,
         dropout,
         num_previous_frames,
+        is_timewise_ln,
     ):
         super().__init__()
-        self.ff_module1 = feed_forward.CausalFeedForwardModule(input_size, ff_hidden_size, dropout)
-        self.conv_module = convolution.CausalConvolutionModule(input_size, conv_hidden_size, conv_kernel_size, dropout)
-        self.mha_module = multi_head_attention.CausalMultiHeadAttentionModule(
-            input_size, mha_num_heads, dropout, num_previous_frames=num_previous_frames
+        self.ff_module1 = feed_forward.CausalFeedForwardModule(input_size, ff_hidden_size, dropout, is_timewise_ln)
+        self.conv_module = convolution.CausalConvolutionModule(
+            input_size, conv_hidden_size, conv_kernel_size, dropout, is_timewise_ln
         )
-        self.ff_module2 = feed_forward.CausalFeedForwardModule(input_size, ff_hidden_size, dropout)
-        self.layer_norm = normalization.CausalLayerNormalization(input_size)
+        self.mha_module = multi_head_attention.CausalMultiHeadAttentionModule(
+            input_size, mha_num_heads, dropout, is_timewise_ln, num_previous_frames=num_previous_frames
+        )
+        self.ff_module2 = feed_forward.CausalFeedForwardModule(input_size, ff_hidden_size, dropout, is_timewise_ln)
+        if is_timewise_ln:
+            self.layer_norm = normalization.TimewiseLayerNormalization(input_size)
+        else:
+            self.layer_norm = normalization.CausalLayerNormalization(input_size)
 
     def forward(self, x, x_lengths):
         # x: [B, T, D]

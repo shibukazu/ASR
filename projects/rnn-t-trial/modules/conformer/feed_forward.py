@@ -4,9 +4,12 @@ from . import normalization
 
 
 class CausalFeedForwardModule(torch.nn.Module):
-    def __init__(self, input_size, hidden_size, dropout):
+    def __init__(self, input_size, hidden_size, dropout, is_timewise_ln):
         super().__init__()
-        self.layer_norm = normalization.CausalLayerNormalization(input_size)
+        if is_timewise_ln:
+            self.layer_norm = normalization.TimewiseLayerNormalization(input_size)
+        else:
+            self.layer_norm = normalization.CausalLayerNormalization(input_size)
         self.fc1 = torch.nn.Linear(input_size, hidden_size, bias=True)
         self.swish = torch.nn.SiLU()
         self.dropout1 = torch.nn.Dropout(dropout)

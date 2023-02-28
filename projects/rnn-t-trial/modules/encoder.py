@@ -42,6 +42,7 @@ class CausalConformerEncoder(torch.nn.Module):
         subsampling_kernel_size2,
         subsampling_stride2,
         num_previous_frames,
+        is_timewise_ln,
     ):
         super().__init__()
         self.subsampling = Conv2DSubSampling(
@@ -64,6 +65,7 @@ class CausalConformerEncoder(torch.nn.Module):
                     mha_num_heads=mha_num_heads,
                     dropout=dropout,
                     num_previous_frames=num_previous_frames,
+                    is_timewise_ln=is_timewise_ln,
                 )
                 for _ in range(num_conformer_blocks)
             ]

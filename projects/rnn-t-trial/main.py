@@ -5,7 +5,9 @@ from logging import config, getLogger
 import hydra
 import mlflow
 import torch
+
 import torchaudio
+import warp_rnnt
 from conf import logging_conf
 from data import LibriSpeechDataset, YesNoDataset, get_dataloader
 from hydra.core.hydra_config import HydraConfig
@@ -54,6 +56,7 @@ def main(cfg: DictConfig):
             model_file_path=cfg.tokenizer.model_file_path,
         )
         blank_idx = tokenizer.blank_token_id
+        eos_idx = tokenizer.eos_token_id
         vocab_size = tokenizer.num_tokens
         if cfg.dataset.name == "YesNo":
             train_dataset = YesNoDataset(
@@ -104,6 +107,7 @@ def main(cfg: DictConfig):
         model_args = {
             "vocab_size": vocab_size,
             "blank_idx": blank_idx,
+            "eos_idx": eos_idx,
             "encoder_input_size": cfg.model.encoder.input_size,
             "encoder_subsampled_input_size": cfg.model.encoder.subsampled_input_size,
             "encoder_num_conformer_blocks": cfg.model.encoder.num_conformer_blocks,
@@ -122,6 +126,8 @@ def main(cfg: DictConfig):
             "predictor_num_layers": cfg.model.predictor.num_layers,
             "jointnet_hidden_size": cfg.model.jointnet.hidden_size,
             "decoder_buffer_size": cfg.decoder.buffer_size,
+            "is_fused_softmax": True if cfg.model.warp_rnnt else False,
+            "is_timewise_ln": cfg.model.is_timewise_ln,
         }
         if cfg.model.name == "CausalConformer":
             model = CausalConformerModel(**model_args)
@@ -162,26 +168,48 @@ def main(cfg: DictConfig):
                 benc_input = benc_input.to(DEVICE)
                 bpred_input = bpred_input.to(DEVICE)
 
-                bpadded_output, bpadded_ctc_log_probs, bsubsampled_enc_input_length = model(
-                    padded_enc_input=benc_input,
-                    enc_input_lengths=benc_input_length,
-                    padded_pred_input=bpred_input,
-                    pred_input_lengths=bpred_input_length,
-                )
-                # rnnt loss
-                rnnt_loss = rnnt_criterion(
-                    logits=bpadded_output,
-                    targets=bpred_input,
-                    logit_lengths=bsubsampled_enc_input_length.to(DEVICE),
-                    target_lengths=bpred_input_length.to(DEVICE),
-                )
-                # ctc loss
-                ctc_loss = ctc_criterion(
-                    log_probs=bpadded_ctc_log_probs.transpose(0, 1),
-                    targets=bpred_input,
-                    input_lengths=bsubsampled_enc_input_length.to(DEVICE),
-                    target_lengths=bpred_input_length.to(DEVICE),
-                )
+                if cfg.model.warp_rnnt:
+                    bpadded_rnnt_log_probs, bpadded_ctc_log_probs, bsubsampled_enc_input_length = model(
+                        padded_enc_input=benc_input,
+                        enc_input_lengths=benc_input_length,
+                        padded_pred_input=bpred_input,
+                        pred_input_lengths=bpred_input_length,
+                    )
+                    rnnt_loss = warp_rnnt.rnnt_loss(
+                        log_probs=bpadded_rnnt_log_probs,
+                        labels=bpred_input,
+                        frames_lengths=bsubsampled_enc_input_length.to(DEVICE),
+                        labels_lengths=bpred_input_length.to(DEVICE),
+                        blank=blank_idx,
+                        reduction="sum",
+                        fastemit_lambda=cfg.model.fastemit_lambda,
+                    )
+                    ctc_loss = ctc_criterion(
+                        log_probs=bpadded_ctc_log_probs.transpose(0, 1),
+                        targets=bpred_input,
+                        input_lengths=bsubsampled_enc_input_length.to(DEVICE),
+                        target_lengths=bpred_input_length.to(DEVICE),
+                    )
+                else:
+                    bpadded_rnnt_logits, bpadded_ctc_logits, bsubsampled_enc_input_length = model(
+                        padded_enc_input=benc_input,
+                        enc_input_lengths=benc_input_length,
+                        padded_pred_input=bpred_input,
+                        pred_input_lengths=bpred_input_length,
+                    )
+                    rnnt_loss = rnnt_criterion(
+                        logits=bpadded_rnnt_logits,
+                        targets=bpred_input,
+                        logit_lengths=bsubsampled_enc_input_length.to(DEVICE),
+                        target_lengths=bpred_input_length.to(DEVICE),
+                    )
+                    bpadded_ctc_log_probs = torch.nn.functional.log_softmax(bpadded_ctc_logits, dim=-1)
+                    ctc_loss = ctc_criterion(
+                        log_probs=bpadded_ctc_log_probs.transpose(0, 1),
+                        targets=bpred_input,
+                        input_lengths=bsubsampled_enc_input_length.to(DEVICE),
+                        target_lengths=bpred_input_length.to(DEVICE),
+                    )
 
                 loss = rnnt_loss + 0.3 * ctc_loss
 
@@ -214,31 +242,54 @@ def main(cfg: DictConfig):
             epoch_dev_wer = 0
             bar = tqdm(total=len(dev_dataset))
             bar.set_description(f"Valid Epoch {i}")
+            torch.cuda.empty_cache()
             with torch.no_grad():
                 for _, benc_input, bpred_input, benc_input_length, bpred_input_length, baudio_sec in dev_dataloader:
                     benc_input = benc_input.to(DEVICE)
                     bpred_input = bpred_input.to(DEVICE)
 
-                    bpadded_output, bpadded_ctc_log_probs, bsubsampled_enc_input_length = model(
-                        padded_enc_input=benc_input,
-                        enc_input_lengths=benc_input_length,
-                        padded_pred_input=bpred_input,
-                        pred_input_lengths=bpred_input_length,
-                    )
-                    # rnnt loss
-                    rnnt_loss = rnnt_criterion(
-                        logits=bpadded_output,
-                        targets=bpred_input,
-                        logit_lengths=bsubsampled_enc_input_length.to(DEVICE),
-                        target_lengths=bpred_input_length.to(DEVICE),
-                    )
-                    # ctc loss
-                    ctc_loss = ctc_criterion(
-                        log_probs=bpadded_ctc_log_probs.transpose(0, 1),
-                        targets=bpred_input,
-                        input_lengths=bsubsampled_enc_input_length.to(DEVICE),
-                        target_lengths=bpred_input_length.to(DEVICE),
-                    )
+                    if cfg.model.warp_rnnt:
+                        bpadded_rnnt_log_probs, bpadded_ctc_log_probs, bsubsampled_enc_input_length = model(
+                            padded_enc_input=benc_input,
+                            enc_input_lengths=benc_input_length,
+                            padded_pred_input=bpred_input,
+                            pred_input_lengths=bpred_input_length,
+                        )
+                        rnnt_loss = warp_rnnt.rnnt_loss(
+                            log_probs=bpadded_rnnt_log_probs,
+                            labels=bpred_input,
+                            frames_lengths=bsubsampled_enc_input_length.to(DEVICE),
+                            labels_lengths=bpred_input_length.to(DEVICE),
+                            blank=blank_idx,
+                            reduction="sum",
+                            fastemit_lambda=cfg.model.fastemit_lambda,
+                        )
+                        ctc_loss = ctc_criterion(
+                            log_probs=bpadded_ctc_log_probs.transpose(0, 1),
+                            targets=bpred_input,
+                            input_lengths=bsubsampled_enc_input_length.to(DEVICE),
+                            target_lengths=bpred_input_length.to(DEVICE),
+                        )
+                    else:
+                        bpadded_rnnt_logits, bpadded_ctc_logits, bsubsampled_enc_input_length = model(
+                            padded_enc_input=benc_input,
+                            enc_input_lengths=benc_input_length,
+                            padded_pred_input=bpred_input,
+                            pred_input_lengths=bpred_input_length,
+                        )
+                        rnnt_loss = rnnt_criterion(
+                            logits=bpadded_rnnt_logits,
+                            targets=bpred_input,
+                            logit_lengths=bsubsampled_enc_input_length.to(DEVICE),
+                            target_lengths=bpred_input_length.to(DEVICE),
+                        )
+                        bpadded_ctc_log_probs = torch.nn.functional.log_softmax(bpadded_ctc_logits, dim=-1)
+                        ctc_loss = ctc_criterion(
+                            log_probs=bpadded_ctc_log_probs.transpose(0, 1),
+                            targets=bpred_input,
+                            input_lengths=bsubsampled_enc_input_length.to(DEVICE),
+                            target_lengths=bpred_input_length.to(DEVICE),
+                        )
 
                     loss = rnnt_loss + 0.3 * ctc_loss
                     loss = loss / bpred_input.shape[0]

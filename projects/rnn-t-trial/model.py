@@ -123,11 +123,16 @@ class CausalConformerModel(torch.nn.Module):
         predictor_num_layers,
         jointnet_hidden_size,
         blank_idx,
+        eos_idx,
         decoder_buffer_size,
+        is_fused_softmax,
+        is_timewise_ln,
     ):
         super().__init__()
 
+        self.is_fused_softmax = is_fused_softmax
         self.blank_idx = blank_idx
+        self.eos_idx = eos_idx
         self.decoder_buffer_size = decoder_buffer_size
         self.encoder_num_previous_frames = encoder_num_previous_frames
 
@@ -145,6 +150,7 @@ class CausalConformerModel(torch.nn.Module):
             subsampling_kernel_size2=encoder_subsampling_kernel_size2,
             subsampling_stride2=encoder_subsampling_stride2,
             num_previous_frames=encoder_num_previous_frames,
+            is_timewise_ln=is_timewise_ln,
         )  # [B, subsampled_T, subsampled_D]
 
         self.predictor = Predictor(
@@ -173,13 +179,17 @@ class CausalConformerModel(torch.nn.Module):
     ):
         padded_enc_output, subsampled_enc_input_lengths = self.encoder(padded_enc_input, enc_input_lengths)
         padded_pred_output, _ = self.predictor(padded_pred_input, pred_input_lengths)
-        padded_output = self.jointnet(padded_enc_output, padded_pred_output)
+        padded_rnnt_logits = self.jointnet(padded_enc_output, padded_pred_output)
 
         # For CTC loss
         padded_ctc_logits = self.ctc_ff(padded_enc_output)
-        padded_ctc_log_probs = torch.nn.functional.log_softmax(padded_ctc_logits, dim=-1)
 
-        return padded_output, padded_ctc_log_probs, subsampled_enc_input_lengths
+        if self.is_fused_softmax:
+            padded_rnnt_log_probs = torch.nn.functional.log_softmax(padded_rnnt_logits, dim=-1)
+            padded_ctc_log_probs = torch.nn.functional.log_softmax(padded_ctc_logits, dim=-1)
+            return padded_rnnt_log_probs, padded_ctc_log_probs, subsampled_enc_input_lengths
+        else:
+            return padded_rnnt_logits, padded_ctc_logits, subsampled_enc_input_lengths
 
     @torch.no_grad()
     def greedy_inference(self, enc_inputs, enc_input_lengths) -> List[List[int]]:
@@ -201,6 +211,8 @@ class CausalConformerModel(torch.nn.Module):
                 pred_token = logits.argmax(dim=-1)
                 if pred_token != self.blank_idx:
                     hyp_tokens.append(pred_token.item())
+                    if pred_token == self.eos_idx:
+                        break
                     pred_input = torch.tensor([[pred_token]], dtype=torch.int32).to(enc_output.device)
                     pred_output, hidden = self.predictor.forward_wo_prepend(
                         pred_input, torch.tensor([1]), hidden=hidden
@@ -221,7 +233,8 @@ class CausalConformerModel(torch.nn.Module):
         batch_hyp_token_indices = []
         BUFFER_SIZE = self.decoder_buffer_size
         NUM_PREVIOUS_FRAMES = self.encoder_num_previous_frames
-        for enc_input, enc_input_length in zip(enc_inputs, enc_input_lengths):
+        for enc_input, enc_input_length in tqdm(zip(enc_inputs, enc_input_lengths)):
+            is_detect_eos = False
             if enc_input.size(0) > enc_input_length:
                 enc_input = enc_input[:enc_input_length, :]
             hyp_token_indices = []
@@ -229,6 +242,8 @@ class CausalConformerModel(torch.nn.Module):
             pred_input = torch.tensor([[self.blank_idx]], dtype=torch.int32).to(enc_input.device)
             pred_output, hidden = self.predictor.forward_wo_prepend(pred_input, torch.tensor([1]), hidden=None)
             for i in range(5, enc_input.shape[0]):
+                if is_detect_eos:
+                    break
                 if NUM_PREVIOUS_FRAMES == "all":
                     buffer.append(enc_input[: i + 1])
                 else:
@@ -239,6 +254,8 @@ class CausalConformerModel(torch.nn.Module):
                     buffer = []
                     batch_enc_output, batch_subsampled_length = self.encoder(batch, batch_lengths)
                     for j in range(len(batch_enc_output)):
+                        if is_detect_eos:
+                            break
                         subsampled_length = batch_subsampled_length[j]
                         # NOTE: JointNetは線形層を通しているだけであり、時刻に関して独立->現在のenc_outだけで十分
                         enc_output = batch_enc_output[j][subsampled_length - 1].view(1, 1, -1)
@@ -251,6 +268,9 @@ class CausalConformerModel(torch.nn.Module):
                             else:
                                 num_token_indices += 1
                                 hyp_token_indices.append(pred_token_idx.item())
+                                if pred_token_idx == self.eos_idx:
+                                    is_detect_eos = True
+                                    break
                                 pred_input = torch.tensor([[pred_token_idx]], dtype=torch.int32).to(enc_input.device)
                                 pred_output, hidden = self.predictor.forward_wo_prepend(
                                     pred_input, torch.tensor([1]), hidden=hidden

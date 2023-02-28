@@ -5,22 +5,22 @@ hydra:
 dataset:
   name: "Librispeech"
   train:
-    json_file_path: "./json/librispeech_train-clean-100.json"
+    json_file_path: "./json/librispeech_train-all-960.json"
   dev:
-    json_file_path: "./json/librispeech_dev-clean.json"
+    json_file_path: "./json/librispeech_dev-other.json"
 
 tokenizer:
-  model_file_path: "./vocabs/librispeech_char.model"
+  model_file_path: "./vocabs/librispeech_1024_bpe.model"
 
 model:
   name: "CausalConformer"
   encoder:
     input_size: 80
-    subsampled_input_size: 256
+    subsampled_input_size: 144
     num_conformer_blocks: 16
-    ff_hidden_size: 1024
+    ff_hidden_size: 144
     conv_hidden_size: 144
-    conv_kernel_size: 15 # non-causalの半分
+    conv_kernel_size: 16 # non-causalの半分
     mha_num_heads: 4
     dropout: 0.1
     subsampling_kernel_size1: 3
@@ -29,11 +29,11 @@ model:
     subsampling_stride2: 2
     num_previous_frames: "all"
   predictor:
-    embedding_size: 300
-    hidden_size: 300
+    embedding_size: 320
+    hidden_size: 320
     num_layers: 1
   jointnet:
-    hidden_size: 300
+    hidden_size: 256
   spec_aug:
     num_freq_mask: 2
     freq_mask_max_length: 30
@@ -44,20 +44,20 @@ model:
   is_timewise_ln: true
 
 decoder:
-  type: "streaming_greedy"
+  type: "non_streaming_greedy"
   buffer_size: 4
 
-do_decode: false
+do_decode: true
 
 train:
-  num_epoch: 100
-  batch_sec: 400
-  accum_sec: 400
+  num_epoch: 70
+  batch_sec: 100
+  accum_sec: 3000
   optimize:
     max_grad_norm: 5.0
     lr: 5.0
-    warmup_steps: 25000
-    weight_decay: 0.001
+    warmup_steps: 10000
+    weight_decay: 0.000001
     eps: 0.000000001
     beta1: 0.9
     beta2: 0.98
