@@ -132,7 +132,6 @@ class LibriSpeechDataset(torch.utils.data.Dataset):
         x_len = len(x)
         transcript = raw_transcript.lower()
         y = self.tokenizer.text_to_token_ids(transcript)
-        # y.append(self.tokenizer.eos_token_id)
         y_len = len(y)
 
         return (
@@ -153,6 +152,33 @@ class LibriSpeechDataset(torch.utils.data.Dataset):
             data["raw_transcript"],
         )
         return audio_sec
+
+
+class LibriSpeechTextDataset(torch.utils.data.Dataset):
+    def __init__(
+        self,
+        json_file_path: str,
+        tokenizer: SentencePieceTokenizer,
+    ):
+        self.json = json.load(open(json_file_path))
+        self.tokenizer = tokenizer
+
+    def __len__(self):
+        return len(self.json)
+
+    def __getitem__(self, idx):
+        data = self.json[str(idx)]
+        raw_transcript = data["raw_transcript"]
+
+        transcript = raw_transcript.lower()
+        y = self.tokenizer.text_to_token_ids(transcript)
+        y_len = len(y)
+
+        return (
+            idx,
+            torch.tensor(y, dtype=torch.long),
+            torch.tensor(y_len, dtype=torch.long),
+        )
 
 
 class RandomTimeBatchSampler(torch.utils.data.Sampler):
@@ -220,6 +246,38 @@ class RandomTimeFixedBatchSampler(torch.utils.data.Sampler):
         return len(self.batches)
 
 
+class RandomTextLengthFixedBatchSampler(torch.utils.data.Sampler):
+    def __init__(self, dataset, batch_text_len):
+        self.dataset = dataset
+        self.batch_text_len = batch_text_len
+        self.batches = []
+
+        bar = tqdm(total=len(self.dataset))
+        bar.set_description("Batch Prepare")
+        indices = list(range(len(self.dataset)))
+        random.shuffle(indices)
+        sampled_size = 0
+        while sampled_size < len(self.dataset):
+            batch = []
+            sampled_len = 0
+            while sampled_size < len(self.dataset):
+                text_len = self.dataset[indices[sampled_size]][2]
+                if text_len + sampled_len > self.batch_text_len:
+                    break
+                batch.append(indices[sampled_size])
+                sampled_len += text_len
+                sampled_size += 1
+                bar.update(1)
+            self.batches.append(batch)
+
+    def __iter__(self):
+        random.shuffle(self.batches)
+        return iter(self.batches)
+
+    def __len__(self):
+        return len(self.batches)
+
+
 def get_dataloader(
     dataset,
     batch_sec,
@@ -240,6 +298,32 @@ def get_dataloader(
     dataloader = torch.utils.data.DataLoader(
         dataset,
         batch_sampler=RandomTimeFixedBatchSampler(dataset, batch_sec),
+        num_workers=num_workers,
+        collate_fn=collate_fn,
+        pin_memory=pin_memory,
+    )
+
+    return dataloader
+
+
+def get_text_dataloader(
+    dataset,
+    batch_text_len,
+    num_workers,
+    pin_memory,
+    pad_idx,
+):
+    def collate_fn(batch):
+        bidx, by, by_len = zip(*batch)
+
+        by = torch.nn.utils.rnn.pad_sequence(by, batch_first=True, padding_value=pad_idx)
+        by_len = torch.tensor(by_len)
+
+        return bidx, by, by_len
+
+    dataloader = torch.utils.data.DataLoader(
+        dataset,
+        batch_sampler=RandomTextLengthFixedBatchSampler(dataset, batch_text_len),
         num_workers=num_workers,
         collate_fn=collate_fn,
         pin_memory=pin_memory,
