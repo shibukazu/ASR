@@ -8,6 +8,7 @@ import torch
 from conf import logging_conf
 from data import LibriSpeechTextDataset, get_text_dataloader
 from hydra.core.hydra_config import HydraConfig
+from lm_model import LSTMLM
 from omegaconf import DictConfig
 from rich.logging import RichHandler
 from tokenizer import SentencePieceTokenizer
@@ -22,33 +23,6 @@ class DataParallel(torch.nn.DataParallel):
             return super().__getattr__(name)
         except AttributeError:
             return getattr(self.module, name)
-
-
-class LanguageModel(torch.nn.Module):
-    def __init__(self, vocab_size, embed_dim, hidden_dim, num_layers, dropout):
-        super().__init__()
-        self.embedding = torch.nn.Embedding(vocab_size, embed_dim)
-        self.rnn = torch.nn.LSTM(
-            input_size=embed_dim,
-            hidden_size=hidden_dim,
-            num_layers=num_layers,
-            dropout=dropout,
-            batch_first=True,
-            bidirectional=False,
-        )
-        self.linear = torch.nn.Linear(hidden_dim, vocab_size)
-
-    def forward(self, x, x_len):
-        total_length = x.shape[1]
-        x = self.embedding(x)  # [B, T, E]
-        self.rnn.flatten_parameters()
-        packed_x = torch.nn.utils.rnn.pack_padded_sequence(
-            input=x, lengths=x_len.tolist(), batch_first=True, enforce_sorted=False
-        )
-        packed_x, _ = self.rnn(packed_x)
-        x, _ = torch.nn.utils.rnn.pad_packed_sequence(packed_x, total_length=total_length, batch_first=True)
-        x = self.linear(x)
-        return x
 
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -120,7 +94,7 @@ def main(cfg: DictConfig):
             "dropout": cfg.model.dropout,
         }
 
-        language_model = LanguageModel(**model_args)
+        language_model = LSTMLM(**model_args)
         language_model = DataParallel(language_model).to(DEVICE)
         optimizer = torch.optim.Adam(
             language_model.parameters(),
@@ -165,7 +139,7 @@ def main(cfg: DictConfig):
                 else:
                     optimizer.step()
                     optimizer.zero_grad()
-                
+
                 perp = torch.exp(loss)
                 # bprob = torch.nn.functional.softmax(boutput, dim=-1)
                 # perp = perplexity(bprob, bteacher, ignore_index=tokenizer.pad_token_id)
@@ -221,7 +195,7 @@ def main(cfg: DictConfig):
             torch.save(
                 {
                     "model_args": model_args,
-                    "model": language_model.state_dict(),
+                    "model": language_model.module.state_dict(),
                     "optimizer": optimizer.state_dict(),
                     "dev_loss": epoch_dev_loss / len(dev_dataset),
                     "dev_perplexity": epoch_dev_perplexity / len(dev_dataset),

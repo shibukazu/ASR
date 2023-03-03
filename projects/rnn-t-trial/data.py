@@ -172,6 +172,7 @@ class LibriSpeechTextDataset(torch.utils.data.Dataset):
 
         transcript = raw_transcript.lower()
         y = self.tokenizer.text_to_token_ids(transcript)
+        y.append(self.tokenizer.eos_token_id)
         y_len = len(y)
 
         return (
