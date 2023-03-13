@@ -40,6 +40,9 @@ model:
     freq_mask_max_length: 30
     num_time_mask: 2
     time_mask_max_length: 40
+  fastemit_lambda: 0.004
+  warp_rnnt: true
+  is_timewise_ln: true
 
 decoder:
   type: "non_streaming_greedy"
@@ -49,11 +52,11 @@ do_decode: false
 
 train:
   num_epoch: 70
-  batch_sec: 150
+  batch_sec: 100
   accum_sec: 300
   optimize:
     max_grad_norm: 5.0
-    lr: 5.0
+    lr: 10
     warmup_steps: 25000
     weight_decay: 0.000001
     eps: 0.000000001

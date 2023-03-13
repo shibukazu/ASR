@@ -75,3 +75,11 @@ class LMBeamSearch:
             else:
                 remained_next_hypotheses.append(hypothesis)
         return remained_next_hypotheses, ended_hypotheses
+
+class RNNTHypotheis:
+    def __init__(self, hyp: List[int], next_input: torch.Tensor, hidden, score):
+        self.hyp = hyp
+        self.next_input = next_input
+        self.hidden = hidden
+        self.score = score
+

@@ -155,9 +155,9 @@ def main(cfg: DictConfig):
                 bar.update(btext.shape[0])
 
             logger.info(f"Train Loss: {epoch_train_loss / len(train_dataset)}")
-            logger.info(f"Train Perplexity: {epoch_train_perplexity / len(train_dataset)}")
+            logger.info(f"Train Perplexity: {math.exp(epoch_train_loss / len(train_dataset))}")
             mlflow.log_metric("train_loss", epoch_train_loss / len(train_dataset))
-            mlflow.log_metric("train_perplexity", epoch_train_perplexity / len(train_dataset))
+            mlflow.log_metric("train_perplexity", math.exp(epoch_train_loss / len(train_dataset)))
 
             bar = tqdm(total=len(dev_dataset))
             bar.set_description(f"Dev Epoch {i}  ")
@@ -188,9 +188,9 @@ def main(cfg: DictConfig):
                     bar.update(btext.shape[0])
 
             logger.info(f"Dev Loss: {epoch_dev_loss / len(dev_dataset)}")
-            logger.info(f"Dev Perplexity: {epoch_dev_perplexity / len(dev_dataset)}")
+            logger.info(f"Dev Perplexity: {math.exp(epoch_dev_loss / len(dev_dataset))}")
             mlflow.log_metric("dev_loss", epoch_dev_loss / len(dev_dataset))
-            mlflow.log_metric("dev_perplexity", epoch_dev_perplexity / len(dev_dataset))
+            mlflow.log_metric("dev_perplexity", math.exp(epoch_dev_loss / len(dev_dataset)))
 
             torch.save(
                 {

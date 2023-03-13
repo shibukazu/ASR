@@ -246,8 +246,7 @@ class CausalConformerModel(torch.nn.Module):
                 # 各時刻ごとにkeep_hypothesesを更新する
                 new_hypotheses = []
                 for _, _, hypothesis in keep_hypotheses:
-                    heapq.heappush(
-                        new_hypotheses,
+                    new_hypotheses.append(
                         (
                             -1 * hypothesis.score,
                             len(new_hypotheses),
@@ -260,14 +259,42 @@ class CausalConformerModel(torch.nn.Module):
                             ),
                         ),
                     )
+                heapq.heapify(new_hypotheses)
                 keep_hypotheses = []
                 while len(keep_hypotheses) < beam_size and len(new_hypotheses) > 0:
                     _, _, most_probable_hypothesis = heapq.heappop(new_hypotheses)
                     if most_probable_hypothesis.is_blank_ended:
-                        heapq.heappush(
-                            keep_hypotheses,
-                            (-1 * most_probable_hypothesis.score, len(keep_hypotheses), most_probable_hypothesis),
-                        )
+                        # すでにkeep_hypothesesに存在している場合は追加せずにスコアを加算する
+                        # これは以下のようなケースで必要になると考えられる
+                        # - 前の時刻で[AB, ABC]という仮説がkeep_hypothesesに入れられる
+                        # - 現在の時刻で AB -> C -> Blank という仮説が最も確率の高い仮説となる
+                        # - 現在の時刻で ABC -> Blank という仮説が次に確率の高い仮説となる
+                        # 上記２つはTransducerにおいては異なるパターンであるため個別に考える必要がある
+                        is_already_exist = False
+                        for keep_hypothesis_idx in range(len(keep_hypotheses)):
+                            _, _, hypothesis = keep_hypotheses[keep_hypothesis_idx]
+                            if hypothesis.hyp == most_probable_hypothesis.hyp:
+                                is_already_exist = True
+                                """
+                                スコアの加算については後ほど検討
+                                log_probの加算ではなく、確率の加算として表現するべき
+                                keep_hypotheses[keep_hypothesis_idx] = (
+                                    -1 * (hypothesis.score + most_probable_hypothesis.score),
+                                    keep_hypothesis_idx,
+                                    self.Hypothesis(
+                                        hyp=hypothesis.hyp,
+                                        is_blank_ended=False,
+                                        hidden=hypothesis.hidden,
+                                        score=hypothesis.score + most_probable_hypothesis.score,
+                                        len_at_t=0,
+                                    ),
+                                )
+                                """
+                                break
+                        if not is_already_exist:
+                            keep_hypotheses.append(
+                                (-1 * most_probable_hypothesis.score, len(keep_hypotheses), most_probable_hypothesis)
+                            )
                     else:
                         # inferenceを行う
                         pred_input = torch.tensor([[most_probable_hypothesis.hyp[-1]]], dtype=torch.int32).to(

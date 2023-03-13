@@ -1,0 +1,30 @@
+hydra:
+  run:
+    dir: /home/shibutani/fs/ASR/projects/rnn-t-trial/outputs/${now:%Y-%m-%d}/${now:%H-%M-%S}
+
+dataset:
+  name: "Librispeech"
+  train:
+    json_file_path: "./json/librispeech_train-clean-100.json"
+  dev:
+    json_file_path: "./json/librispeech_dev-clean.json"
+
+tokenizer:
+  model_file_path: "./vocabs/librispeech_1024_bpe.model"
+
+model:
+  embed_dim: 4096
+  hidden_dim: 4096
+  num_layers: 3
+  dropout: 0.1
+
+train:
+  num_epoch: 70
+  batch_text_len: 20000
+  optimize:
+    max_grad_norm: 5.0
+    lr: 0.001
+    weight_decay: 0
+    eps: 0.000000001
+    beta1: 0.9
+    beta2: 0.999
