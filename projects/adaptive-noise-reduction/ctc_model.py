@@ -98,9 +98,13 @@ class CausalConformerCTCModel(torch.nn.Module):
                         hyp_ctc_token_idx = torch.argmax(
                             buffer_blog_probs[j, buffer_bsubsampled_x_len[j]-1, :], dim=-1
                         )  # 現在の時刻の推論結果を知りたいだけなので、最後の時刻のみを見る
-                        if hyp_ctc_token_idx == self.blank_idx:
+                        if hyp_ctc_token_idx == prev_token_idx:
+                            # このときはスキップ
                             continue
-                        elif hyp_ctc_token_idx == prev_token_idx:
+                        elif hyp_ctc_token_idx == self.blank_idx:
+                            # このときはprev_token_idxのみ更新
+                            # これによって、同一トークンの連続が許容される
+                            prev_token_idx = hyp_ctc_token_idx
                             continue
                         else:
                             hyp_token_idxs.append(hyp_ctc_token_idx.item())
