@@ -1,0 +1,52 @@
+hydra:
+  run:
+    dir: /home/shibutani/fs/ASR/projects/adaptive-noise-reduction/outputs/${now:%Y-%m-%d}/${now:%H-%M-%S}
+
+dataset:
+  name: "YesNo"
+  train:
+    json_file_path: "./json/yesno_train.json"
+  dev:
+    json_file_path: "./json/yesno_test.json"
+
+tokenizer:
+  model_file_path: "./vocabs/yesno.char.model"
+
+model:
+  name:
+    "CausalConformerCTC"
+  encoder:
+    input_size: 40
+    subsampled_input_size: 32
+    num_conformer_blocks: 1
+    ff_hidden_size: 32
+    conv_hidden_size: 32
+    conv_kernel_size: 4
+    mha_num_heads: 2
+    dropout: 0.2 # ここを大きくすることで過学習を抑える
+    subsampling_kernel_size1: 3
+    subsampling_stride1: 2
+    subsampling_kernel_size2: 3
+    subsampling_stride2: 2
+    num_previous_frames: "all"
+    is_timewise_ln: true
+
+decoder:
+  type: "streaming_greedy"
+  buffer_size: 4
+
+do_decode: true
+
+train:
+  num_epoch: 100
+  batch_sec: 15
+  accum_sec: 1
+  optimize:
+    max_grad_norm: 5.0
+    lr: 5.0
+    do_schedule: true
+    warmup_steps: 25000
+    weight_decay: 0.0001
+    eps: 0.000000001
+    beta1: 0.9
+    beta2: 0.98
