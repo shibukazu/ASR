@@ -21,7 +21,7 @@ class SpecAug:
         num_mel_channels = cloned.shape[1]
         for _ in range(0, self.num_freq_mask):
             f = np.random.randint(0, self.freq_mask_max_length + 1)
-            if f > num_mel_channels:
+            if f >= num_mel_channels:
                 continue
             f_zero = np.random.randint(0, num_mel_channels - f)
 
@@ -37,7 +37,7 @@ class SpecAug:
         num_time_steps = cloned.shape[0]
         for _ in range(0, self.num_time_mask):
             t = np.random.randint(0, self.time_mask_max_length + 1)
-            if t > num_time_steps:
+            if t >= num_time_steps:
                 continue
             t_zero = np.random.randint(0, num_time_steps - t)
 

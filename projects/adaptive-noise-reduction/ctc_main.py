@@ -7,13 +7,15 @@ import mlflow
 import torch
 from conf import logging_conf
 from ctc_model import CausalConformerCTCModel
-from data import YesNoDataset, get_dataloader
+from data import CSJDataset, YesNoDataset, get_dataloader
 from hydra.core.hydra_config import HydraConfig
 from modules.spec_aug import SpecAug
 from omegaconf import DictConfig
 from rich.logging import RichHandler
 from tokenizer import SentencePieceTokenizer
-from torchmetrics.functional import char_error_rate, word_error_rate
+from torchmetrics.functional import char_error_rate
+
+# from torchmetrics.functional import word_error_rate
 from tqdm import tqdm
 from util.mlflow import log_params_from_omegaconf_dict
 
@@ -93,18 +95,31 @@ def main(cfg: DictConfig):
                 resampling_rate=16000,
                 tokenizer=tokenizer,
             )
-        else:
+        elif cfg.dataset.name == "CSJ":
             spec_aug = SpecAug(
                 freq_mask_max_length=cfg.model.spec_aug.freq_mask_max_length,
                 time_mask_max_length=cfg.model.spec_aug.time_mask_max_length,
                 num_freq_mask=cfg.model.spec_aug.num_freq_mask,
                 num_time_mask=cfg.model.spec_aug.num_time_mask,
             )
+            train_dataset = CSJDataset(
+                json_file_path=cfg.dataset.train.json_file_path,
+                resampling_rate=16000,
+                tokenizer=tokenizer,
+                spec_aug=spec_aug,
+            )
+            dev_dataset = CSJDataset(
+                json_file_path=cfg.dataset.dev.json_file_path,
+                resampling_rate=16000,
+                tokenizer=tokenizer,
+            )
+        else:
             raise NotImplementedError
 
         train_dataloader = get_dataloader(
             train_dataset,
             batch_sec=cfg.train.batch_sec,
+            batch_text_len=cfg.train.batch_text_len,
             num_workers=4,
             pin_memory=True,
             pad_idx=tokenizer.pad_token_id,
@@ -112,6 +127,7 @@ def main(cfg: DictConfig):
         dev_dataloader = get_dataloader(
             dev_dataset,
             batch_sec=cfg.train.batch_sec,
+            batch_text_len=cfg.train.batch_text_len,
             num_workers=4,
             pin_memory=True,
             pad_idx=tokenizer.pad_token_id,
@@ -205,7 +221,7 @@ def main(cfg: DictConfig):
             model.eval()
             epoch_dev_loss = 0
             epoch_dev_cer = 0
-            epoch_dev_wer = 0
+            # epoch_dev_wer = 0
             bar = tqdm(total=len(dev_dataset))
             bar.set_description(f"Valid Epoch {i}")
             torch.cuda.empty_cache()
@@ -237,7 +253,7 @@ def main(cfg: DictConfig):
                         bans_text = tokenizer.batch_token_ids_to_text(bans_token_ids)
 
                         epoch_dev_cer += char_error_rate(bhyp_text, bans_text) * bx.shape[0]
-                        epoch_dev_wer += word_error_rate(bhyp_text, bans_text) * bx.shape[0]
+                        # epoch_dev_wer += word_error_rate(bhyp_text, bans_text) * bx.shape[0]
 
                     bar.update(by.shape[0])
 
@@ -247,8 +263,8 @@ def main(cfg: DictConfig):
                 if i >= 10 and i % 5 == 0 and cfg.do_decode:
                     mlflow.log_metric("dev_cer", epoch_dev_cer / len(dev_dataset), step=i)
                     logger.info(f"Dev CER: {epoch_dev_cer / len(dev_dataset)}")
-                    mlflow.log_metric("dev_wer", epoch_dev_wer / len(dev_dataset), step=i)
-                    logger.info(f"Dev WER: {epoch_dev_wer / len(dev_dataset)}")
+                    # mlflow.log_metric("dev_wer", epoch_dev_wer / len(dev_dataset), step=i)
+                    # logger.info(f"Dev WER: {epoch_dev_wer / len(dev_dataset)}")
 
             if i % 5 == 0:
                 torch.save(

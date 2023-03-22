@@ -2,7 +2,7 @@
 import json
 import multiprocessing
 
-from noise_mixer import create_reverberated_data_parallel
+from preprocess import create_reverberated_data_parallel
 
 NUM_PROCS = 32
 

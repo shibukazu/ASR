@@ -1,0 +1,58 @@
+hydra:
+  run:
+    dir: /home/shibutani/fs/ASR/projects/adaptive-noise-reduction/outputs/${now:%Y-%m-%d}/${now:%H-%M-%S}
+
+dataset:
+  name: "CSJ"
+  train:
+    json_file_path: "./json/concat_noisy_csj_development.json"
+  dev:
+    json_file_path: "./json/concat_noisy_csj_eval1.json"
+
+tokenizer:
+  model_file_path: "./vocabs/csj_train_nodup_sp_8192.bpe.model"
+
+model:
+  name:
+    "CausalConformerCTC"
+  encoder:
+    input_size: 80
+    subsampled_input_size: 512
+    num_conformer_blocks: 12
+    ff_hidden_size: 2048
+    conv_hidden_size: 2048
+    conv_kernel_size: 15
+    mha_num_heads: 8
+    dropout: 0.1 # ここを大きくすることで過学習を抑える
+    subsampling_kernel_size1: 3
+    subsampling_stride1: 2
+    subsampling_kernel_size2: 3
+    subsampling_stride2: 2
+    num_previous_frames: "all" #250 # 40msごとの窓に対して約10秒
+    is_timewise_ln: true
+  spec_aug:
+    num_freq_mask: 2
+    freq_mask_max_length: 30
+    num_time_mask: 2
+    time_mask_max_length: 40
+
+decoder:
+  type: "greedy"
+  buffer_size: 4
+
+do_decode: true
+
+train:
+  num_epoch: 50
+  batch_sec: 300
+  batch_text_len: 1000
+  accum_sec: 300
+  optimize:
+    max_grad_norm: 5.0
+    lr: 0.05
+    do_schedule: true
+    warmup_steps: 1000
+    weight_decay: 0.000001
+    eps: 0.000000001
+    beta1: 0.9
+    beta2: 0.98

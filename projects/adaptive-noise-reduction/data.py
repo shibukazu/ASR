@@ -93,6 +93,7 @@ class CSJDataset(torch.utils.data.Dataset):
         super().__init__()
 
         self.json = json.load(open(json_file_path))
+        self.keys = list(self.json.keys())
         self.spec_aug = spec_aug
         self.tokenizer = tokenizer
         self.resampling_rate = resampling_rate
@@ -105,7 +106,7 @@ class CSJDataset(torch.utils.data.Dataset):
             hop_length=160,
             window_fn=torch.hann_window,
             # メルスペクトログラム設定
-            n_mels=40,
+            n_mels=80,
         )
         self.amplitude_to_db = torchaudio.transforms.AmplitudeToDB(stype="power")
 
@@ -113,7 +114,8 @@ class CSJDataset(torch.utils.data.Dataset):
         return len(self.json)
 
     def __getitem__(self, idx):
-        data = self.json[str(idx)]
+        key = self.keys[idx]
+        data = self.json[key]
         wav_file_path, sampling_rate, audio_sec, raw_transcript = (
             data["wav_file_path"],
             data["sampling_rate"],
@@ -144,9 +146,52 @@ class CSJDataset(torch.utils.data.Dataset):
         )
 
     def get_audio_sec(self, idx):
-        data = self.json[str(idx)]
+        key = self.keys[idx]
+        data = self.json[key]
         audio_sec = data["audio_sec"]
         return audio_sec
+
+    def get_text_len(self, idx):
+        key = self.keys[idx]
+        data = self.json[key]
+        text_len = len(data["raw_transcript"])
+        return text_len
+
+
+class RandomTimeTextLenFixedBatchSampler(torch.utils.data.Sampler):
+    def __init__(self, dataset, batch_sec, batch_text_len):
+        self.dataset = dataset
+        self.batch_sec = batch_sec
+        self.batch_text_len = batch_text_len
+        self.batches = []
+
+        bar = tqdm(total=len(self.dataset))
+        bar.set_description("Batch Prepare")
+        indices = list(range(len(self.dataset)))
+        random.shuffle(indices)
+        sampled_size = 0
+        while sampled_size < len(self.dataset):
+            batch = []
+            sampled_sec = 0
+            sampled_text_len = 0
+            while sampled_size < len(self.dataset):
+                audio_sec = self.dataset.get_audio_sec(indices[sampled_size])
+                text_len = self.dataset.get_text_len(indices[sampled_size])
+                if audio_sec + sampled_sec > self.batch_sec or text_len + sampled_text_len > self.batch_text_len:
+                    break
+                batch.append(indices[sampled_size])
+                sampled_sec += audio_sec
+                sampled_text_len += text_len
+                sampled_size += 1
+                bar.update(1)
+            self.batches.append(batch)
+
+    def __iter__(self):
+        random.shuffle(self.batches)
+        return iter(self.batches)
+
+    def __len__(self):
+        return len(self.batches)
 
 
 class RandomTimeFixedBatchSampler(torch.utils.data.Sampler):
@@ -184,6 +229,7 @@ class RandomTimeFixedBatchSampler(torch.utils.data.Sampler):
 def get_dataloader(
     dataset,
     batch_sec,
+    batch_text_len,
     num_workers,
     pin_memory,
     pad_idx,
@@ -200,7 +246,7 @@ def get_dataloader(
 
     dataloader = torch.utils.data.DataLoader(
         dataset,
-        batch_sampler=RandomTimeFixedBatchSampler(dataset, batch_sec),
+        batch_sampler=RandomTimeTextLenFixedBatchSampler(dataset, batch_sec, batch_text_len),
         num_workers=num_workers,
         collate_fn=collate_fn,
         pin_memory=pin_memory,
