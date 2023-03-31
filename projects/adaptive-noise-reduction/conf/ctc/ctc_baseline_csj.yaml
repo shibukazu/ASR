@@ -19,7 +19,7 @@ model:
     input_size: 80
     subsampled_input_size: 512
     num_conformer_blocks: 12
-    ff_hidden_size: 2048
+    ff_hidden_size: 2048 # x4のほうがいいかもしれない
     conv_hidden_size: 2048
     conv_kernel_size: 15
     mha_num_heads: 8
@@ -43,7 +43,7 @@ decoder:
 do_decode: true
 
 train:
-  num_epoch: 70
+  num_epoch: 20
   batch_sec: 400
   batch_text_len: 1500
   accum_sec: 3000

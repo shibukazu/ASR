@@ -370,6 +370,200 @@ def create_noisy_data_parallel(
     return
 
 
+def create_aligned_noisy_pretrain_data_parallel(
+    data_json,
+    speakers,
+    wav_folder_path,
+    noise_data_jsons,
+    queue,
+):
+    NOISE_ADDED_WAV_FILE_PATH_PREFIX = wav_folder_path
+
+    MIN_SNR = 0
+    MAX_SNR = 10
+
+    result_json = {}
+
+    for speaker in tqdm(speakers):
+        keys = list(data_json[speaker].keys())
+        for key in keys:
+            clean_key = key
+            noise_added_key = key
+
+            clean_wav, sampling_rate = torchaudio.load(data_json[speaker][clean_key]["wav_file_path"])
+            clean_wav = clean_wav.flatten().numpy()
+            clean_length = clean_wav.shape[0]
+
+            while True:
+                noise_data_json = random.choice(noise_data_jsons)
+                noise_key = random.choice(list(noise_data_json.keys()))
+                if os.path.getsize(noise_data_json[noise_key]["wav_file_path"]) > os.path.getsize(
+                    data_json[speaker][clean_key]["wav_file_path"]
+                ):
+                    break
+
+            noise_wav, sampling_rate = torchaudio.load(noise_data_json[noise_key]["wav_file_path"])
+            noise_wav = noise_wav.flatten().numpy()
+            noise_length = noise_wav.shape[0]
+
+            # trim noise
+            start = np.random.randint(0, noise_length - clean_length)
+            noise_wav = noise_wav[start : start + clean_length]
+
+            # calculate RMS
+            clean_rms = np.sqrt(np.mean(clean_wav**2))
+            noise_rms = np.sqrt(np.mean(noise_wav**2))
+
+            # adjust noise amplitude
+            snr_d = np.random.uniform(MIN_SNR, MAX_SNR)
+            noise_rms_d = clean_rms / (10 ** (snr_d / 20))
+            noise_wav = noise_wav * noise_rms_d / noise_rms
+
+            # check SNR
+            assert (
+                np.abs(20 * np.log10(np.sqrt(np.mean(clean_wav**2)) / np.sqrt(np.mean(noise_wav**2))) - snr_d)
+                < 1e-3
+            )
+
+            # add noise
+            noise_added_wav = clean_wav + noise_wav
+            noise_added_wav = noise_added_wav.astype(np.float32).reshape(1, -1)
+            noise_added_wav = torch.from_numpy(noise_added_wav)
+
+            # save
+            os.makedirs(NOISE_ADDED_WAV_FILE_PATH_PREFIX, exist_ok=True)
+            noise_added_wav_file_path = os.path.join(NOISE_ADDED_WAV_FILE_PATH_PREFIX, noise_added_key + ".wav")
+            torchaudio.save(filepath=noise_added_wav_file_path, src=noise_added_wav, sample_rate=sampling_rate)
+
+            if speaker not in result_json:
+                result_json[speaker] = {}
+
+            result_json[speaker][noise_added_key] = {}
+            result_json[speaker][noise_added_key]["wav_file_path"] = noise_added_wav_file_path
+            result_json[speaker][noise_added_key]["sampling_rate"] = torchaudio.info(
+                noise_added_wav_file_path
+            ).sample_rate
+            result_json[speaker][noise_added_key]["audio_sec"] = (
+                torchaudio.info(noise_added_wav_file_path).num_frames
+                / torchaudio.info(noise_added_wav_file_path).sample_rate
+            )
+            result_json[speaker][noise_added_key]["raw_transcript"] = data_json[speaker][clean_key]["raw_transcript"]
+            result_json[speaker][noise_added_key]["vad"] = data_json[speaker][clean_key]["vad"]
+            result_json[speaker][noise_added_key]["metainfo"] = {}
+            result_json[speaker][noise_added_key]["metainfo"]["original_wav_file_path"] = data_json[speaker][
+                clean_key
+            ]["wav_file_path"]
+            result_json[speaker][noise_added_key]["metainfo"]["noise_wav_file_path"] = noise_data_json[noise_key][
+                "wav_file_path"
+            ]
+            result_json[speaker][noise_added_key]["metainfo"]["snr_d"] = snr_d
+
+    queue.put(result_json)
+    return
+
+
+def create_aligned_noisy_adaptation_data_parallel(
+    data_json,
+    speakers,
+    wav_folder_path,
+    noise_data_jsons,
+    queue,
+):
+    NOISE_ADDED_WAV_FILE_PATH_PREFIX = wav_folder_path
+
+    MIN_SNR = 0
+    MAX_SNR = 10
+
+    result_json = {}
+
+    for speaker in tqdm(speakers):
+        keys = list(data_json[speaker].keys())
+        total_audio_sec = 0
+        # 講演の全体の長さを計算する
+        for key in keys:
+            total_audio_sec += data_json[speaker][key]["audio_sec"]
+        print(total_audio_sec)
+        # 講演における全体の長さを超えるノイズを選択する
+        while True:
+            noise_data_json = random.choice(noise_data_jsons)
+            noise_key = random.choice(list(noise_data_json.keys()))
+            if noise_data_json[noise_key]["audio_sec"] > total_audio_sec:
+                break
+        noise_wav, noise_sampling_rate = torchaudio.load(noise_data_json[noise_key]["wav_file_path"])
+        noise_wav = noise_wav.flatten().numpy()
+
+        # ノイズデータ内での開始時点を決定する
+        noise_latest_start_sec = noise_data_json[noise_key]["audio_sec"] - total_audio_sec
+        noise_start_sec = np.random.uniform(0, noise_latest_start_sec)
+        noise_start_idx = int(noise_start_sec * noise_sampling_rate)
+
+        # SN比を決定する(話者内では同一のSN比を維持する)
+        snr_d = np.random.uniform(MIN_SNR, MAX_SNR)
+
+        for key in keys:
+            clean_key = key
+            noise_added_key = key
+
+            clean_wav, clean_sampling_rate = torchaudio.load(data_json[speaker][clean_key]["wav_file_path"])
+            assert clean_sampling_rate == noise_sampling_rate
+            clean_wav = clean_wav.flatten().numpy()
+            clean_length = clean_wav.shape[0]
+
+            # trim noise
+            trimmed_noise_wav = noise_wav[noise_start_idx : noise_start_idx + clean_length]
+            noise_start_idx = noise_start_idx + clean_length
+
+            # calculate RMS
+            clean_rms = np.sqrt(np.mean(clean_wav**2))
+            trimmed_noise_rms = np.sqrt(np.mean(trimmed_noise_wav**2))
+
+            # adjust noise amplitude
+            trimmed_noise_rms_d = clean_rms / (10 ** (snr_d / 20))
+            trimmed_noise_wav = trimmed_noise_wav * trimmed_noise_rms_d / trimmed_noise_rms
+
+            # check SNR
+            assert (
+                np.abs(20 * np.log10(np.sqrt(np.mean(clean_wav**2)) / np.sqrt(np.mean(trimmed_noise_wav**2))) - snr_d)
+                < 1e-3
+            )
+
+            # add noise
+            noise_added_wav = clean_wav + trimmed_noise_wav
+            noise_added_wav = noise_added_wav.astype(np.float32).reshape(1, -1)
+            noise_added_wav = torch.from_numpy(noise_added_wav)
+
+            # save
+            os.makedirs(NOISE_ADDED_WAV_FILE_PATH_PREFIX, exist_ok=True)
+            noise_added_wav_file_path = os.path.join(NOISE_ADDED_WAV_FILE_PATH_PREFIX, noise_added_key + ".wav")
+            torchaudio.save(filepath=noise_added_wav_file_path, src=noise_added_wav, sample_rate=clean_sampling_rate)
+
+            if speaker not in result_json:
+                result_json[speaker] = {}
+
+            result_json[speaker][noise_added_key] = {}
+            result_json[speaker][noise_added_key]["wav_file_path"] = noise_added_wav_file_path
+            result_json[speaker][noise_added_key]["sampling_rate"] = torchaudio.info(
+                noise_added_wav_file_path
+            ).sample_rate
+            result_json[speaker][noise_added_key]["audio_sec"] = (
+                torchaudio.info(noise_added_wav_file_path).num_frames
+                / torchaudio.info(noise_added_wav_file_path).sample_rate
+            )
+            result_json[speaker][noise_added_key]["raw_transcript"] = data_json[speaker][clean_key]["raw_transcript"]
+            result_json[speaker][noise_added_key]["vad"] = data_json[speaker][clean_key]["vad"]
+            result_json[speaker][noise_added_key]["metainfo"] = {}
+            result_json[speaker][noise_added_key]["metainfo"]["original_wav_file_path"] = data_json[speaker][
+                clean_key
+            ]["wav_file_path"]
+            result_json[speaker][noise_added_key]["metainfo"]["noise_wav_file_path"] = noise_data_json[noise_key][
+                "wav_file_path"
+            ]
+            result_json[speaker][noise_added_key]["metainfo"]["snr_d"] = snr_d
+
+    queue.put(result_json)
+    return
+
+
 def create_concatenated_data_parallel(data_json, keys, NAME, queue):
     speech_key = keys[0].split("_")[0]
     concatenate_keys = []
