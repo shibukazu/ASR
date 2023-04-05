@@ -5,9 +5,9 @@ hydra:
 dataset:
   name: "CSJ"
   train:
-    json_file_path: "./json/noisy_csj_train_nodup_sp.json"
+    json_file_path: "./json/aligned_csj/noisy_pretrain_with_subsampled_vad.json"
   dev:
-    json_file_path: "./json/noisy_csj_eval1_reference.json"
+    json_file_path: "./json/aligned_csj/noisy_pretrain_eval_ref_with_subsampled_vad.json"
 
 tokenizer:
   model_file_path: "./vocabs/csj_train_nodup_sp_4096.bpe.model"
@@ -19,7 +19,7 @@ model:
     input_size: 80
     subsampled_input_size: 512
     num_conformer_blocks: 12
-    ff_hidden_size: 2048
+    ff_hidden_size: 2048 # x4のほうがいいかもしれない
     conv_hidden_size: 2048
     conv_kernel_size: 15
     mha_num_heads: 8

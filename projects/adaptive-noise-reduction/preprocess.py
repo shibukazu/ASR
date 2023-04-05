@@ -462,7 +462,7 @@ def create_aligned_noisy_pretrain_data_parallel(
     return
 
 
-def create_aligned_noisy_adaptation_data_parallel(
+def create_aligned_noisy_pretrain_eval_data_parallel(
     data_json,
     speakers,
     wav_folder_path,
@@ -485,12 +485,15 @@ def create_aligned_noisy_adaptation_data_parallel(
         for key_idx, key in enumerate(keys):
             if is_choose_noise:
                 # ノイズデータおよび開始インデックスを選択する
-                noise_data_json = random.choice(noise_data_jsons)
-                noise_key = random.choice(list(noise_data_json.keys()))
-                noise_wav, noise_sampling_rate = torchaudio.load(noise_data_json[noise_key]["wav_file_path"])
-                noise_wav = noise_wav.flatten().numpy()
+                while True:
+                    noise_data_json = random.choice(noise_data_jsons)
+                    noise_key = random.choice(list(noise_data_json.keys()))
+                    noise_wav, noise_sampling_rate = torchaudio.load(noise_data_json[noise_key]["wav_file_path"])
+                    noise_wav = noise_wav.flatten().numpy()
+                    if noise_wav.shape[0] / noise_sampling_rate > 60:
+                        break
                 # DEMANDは300sなため、少なくとも数発話は含まれるようにする
-                noise_start_sec = np.random.uniform(0, noise_wav.shape[0] / noise_sampling_rate - 100)
+                noise_start_sec = np.random.uniform(0, noise_wav.shape[0] / noise_sampling_rate - 60)
                 noise_start_idx = int(noise_start_sec * noise_sampling_rate)
 
                 is_choose_noise = False
@@ -575,6 +578,73 @@ def create_aligned_noisy_adaptation_data_parallel(
                 "wav_file_path"
             ]
             result_json[speaker][noise_added_key]["metainfo"]["snr_d"] = snr_d
+
+    queue.put(result_json)
+    return
+
+
+def concat_pretrain_eval_with_subsampled_vad_parallel(
+    data_json,
+    speakers,
+    wav_folder_path,
+    queue,
+):
+    WAV_FILE_PATH_PREFIX = wav_folder_path
+
+    result_json = {}
+
+    for speaker in tqdm(speakers):
+        keys = list(data_json[speaker].keys())
+        for key in keys:
+            identifier = key.split("-")[0] + "-" + key.split("-")[1]  # speaker + noise idx
+            if identifier not in result_json:
+                result_json[identifier] = {}
+                result_json[identifier]["sampling_rate"] = data_json[speaker][key]["sampling_rate"]
+                result_json[identifier]["audio_sec"] = 0
+                result_json[identifier]["raw_transcript"] = ""
+                result_json[identifier]["vad"] = []
+                result_json[identifier]["subsampled_vad"] = []
+                result_json[identifier]["metainfo"] = {}
+                result_json[identifier]["metainfo"]["original_wav_file_paths"] = []
+                result_json[identifier]["metainfo"]["noise_wav_file_path"] = data_json[speaker][key]["metainfo"][
+                    "noise_wav_file_path"
+                ]
+                result_json[identifier]["metainfo"]["snr_d"] = data_json[speaker][key]["metainfo"]["snr_d"]
+
+            result_json[identifier]["audio_sec"] += data_json[speaker][key]["audio_sec"]
+            result_json[identifier]["raw_transcript"] += data_json[speaker][key]["raw_transcript"]
+            result_json[identifier]["vad"] += data_json[speaker][key]["vad"]
+            result_json[identifier]["subsampled_vad"] += data_json[speaker][key]["subsampled_vad"]
+            result_json[identifier]["metainfo"]["original_wav_file_paths"].append(
+                data_json[speaker][key]["wav_file_path"]
+            )
+            assert result_json[identifier]["sampling_rate"] == data_json[speaker][key]["sampling_rate"]
+            assert (
+                abs(result_json[identifier]["metainfo"]["snr_d"] - data_json[speaker][key]["metainfo"]["snr_d"]) < 1e-3
+            )
+            assert (
+                result_json[identifier]["metainfo"]["noise_wav_file_path"]
+                == data_json[speaker][key]["metainfo"]["noise_wav_file_path"]
+            )
+
+    identifiers = list(result_json.keys())
+
+    for identifier in tqdm(identifiers):
+        # concat all wav files in original_wav_file_paths
+        wav_file_paths = result_json[identifier]["metainfo"]["original_wav_file_paths"]
+        wav, sr = torchaudio.load(wav_file_paths[0])
+        for wav_file_path in wav_file_paths[1:]:
+            wav_, sr_ = torchaudio.load(wav_file_path)
+            wav = torch.cat([wav, wav_], dim=1)
+        assert sr == sr_
+        assert sr == result_json[identifier]["sampling_rate"]
+
+        # save
+        os.makedirs(WAV_FILE_PATH_PREFIX, exist_ok=True)
+        # 同一のファイル名が存在しないことを確認する
+        assert not os.path.exists(os.path.join(WAV_FILE_PATH_PREFIX, identifier + ".wav"))
+        torchaudio.save(filepath=os.path.join(WAV_FILE_PATH_PREFIX, identifier + ".wav"), src=wav, sample_rate=sr)
+        result_json[identifier]["wav_file_path"] = os.path.join(WAV_FILE_PATH_PREFIX, identifier + ".wav")
 
     queue.put(result_json)
     return
