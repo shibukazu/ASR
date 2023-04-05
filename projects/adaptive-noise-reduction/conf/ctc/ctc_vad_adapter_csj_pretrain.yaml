@@ -5,9 +5,9 @@ hydra:
 dataset:
   name: "CSJ"
   train:
-    json_file_path: "./json/aligned/noisy_pretrain_with_subsampled_vad.json"
+    json_file_path: "./json/aligned_csj/noisy_pretrain_with_subsampled_vad.json"
   dev:
-    json_file_path: "./json/noisy_csj_eval1.json"
+    json_file_path: "./json/aligned_csj/noisy_pretrain_eval_with_subsampled_vad.json"
 
 tokenizer:
   model_file_path: "./vocabs/csj_train_nodup_sp_4096.bpe.model"

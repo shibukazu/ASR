@@ -475,34 +475,32 @@ def create_aligned_noisy_adaptation_data_parallel(
     MAX_SNR = 10
 
     result_json = {}
+    counter = 0
+
+    is_choose_noise = True
 
     for speaker in tqdm(speakers):
         keys = list(data_json[speaker].keys())
-        total_audio_sec = 0
-        # 講演の全体の長さを計算する
-        for key in keys:
-            total_audio_sec += data_json[speaker][key]["audio_sec"]
-        print(total_audio_sec)
-        # 講演における全体の長さを超えるノイズを選択する
-        while True:
-            noise_data_json = random.choice(noise_data_jsons)
-            noise_key = random.choice(list(noise_data_json.keys()))
-            if noise_data_json[noise_key]["audio_sec"] > total_audio_sec:
-                break
-        noise_wav, noise_sampling_rate = torchaudio.load(noise_data_json[noise_key]["wav_file_path"])
-        noise_wav = noise_wav.flatten().numpy()
 
-        # ノイズデータ内での開始時点を決定する
-        noise_latest_start_sec = noise_data_json[noise_key]["audio_sec"] - total_audio_sec
-        noise_start_sec = np.random.uniform(0, noise_latest_start_sec)
-        noise_start_idx = int(noise_start_sec * noise_sampling_rate)
+        for key_idx, key in enumerate(keys):
+            if is_choose_noise:
+                # ノイズデータおよび開始インデックスを選択する
+                noise_data_json = random.choice(noise_data_jsons)
+                noise_key = random.choice(list(noise_data_json.keys()))
+                noise_wav, noise_sampling_rate = torchaudio.load(noise_data_json[noise_key]["wav_file_path"])
+                noise_wav = noise_wav.flatten().numpy()
+                # DEMANDは300sなため、少なくとも数発話は含まれるようにする
+                noise_start_sec = np.random.uniform(0, noise_wav.shape[0] / noise_sampling_rate - 100)
+                noise_start_idx = int(noise_start_sec * noise_sampling_rate)
 
-        # SN比を決定する(話者内では同一のSN比を維持する)
-        snr_d = np.random.uniform(MIN_SNR, MAX_SNR)
+                is_choose_noise = False
+                noise_added_key_prefix = f"{speaker}-{counter}"
+                counter += 1
+                # SN比を決定する(話者+ノイズの組内では同一のSN比を維持する)
+                snr_d = np.random.uniform(MIN_SNR, MAX_SNR)
 
-        for key in keys:
             clean_key = key
-            noise_added_key = key
+            noise_added_key = noise_added_key_prefix + "-" + key
 
             clean_wav, clean_sampling_rate = torchaudio.load(data_json[speaker][clean_key]["wav_file_path"])
             assert clean_sampling_rate == noise_sampling_rate
@@ -512,6 +510,18 @@ def create_aligned_noisy_adaptation_data_parallel(
             # trim noise
             trimmed_noise_wav = noise_wav[noise_start_idx : noise_start_idx + clean_length]
             noise_start_idx = noise_start_idx + clean_length
+
+            # 次のタイミングでノイズを再選択する必要があるか確認する
+            next_clean_key = keys[key_idx + 1] if key_idx + 1 < len(keys) else None
+            if next_clean_key is not None:
+                next_clean_wav, _ = torchaudio.load(data_json[speaker][next_clean_key]["wav_file_path"])
+                next_clean_wav = next_clean_wav.flatten().numpy()
+                next_clean_length = next_clean_wav.shape[0]
+                if noise_start_idx + next_clean_length > noise_wav.shape[0]:
+                    is_choose_noise = True
+            else:
+                # speaker間で引き継がない
+                is_choose_noise = True
 
             # calculate RMS
             clean_rms = np.sqrt(np.mean(clean_wav**2))
@@ -523,7 +533,9 @@ def create_aligned_noisy_adaptation_data_parallel(
 
             # check SNR
             assert (
-                np.abs(20 * np.log10(np.sqrt(np.mean(clean_wav**2)) / np.sqrt(np.mean(trimmed_noise_wav**2))) - snr_d)
+                np.abs(
+                    20 * np.log10(np.sqrt(np.mean(clean_wav**2)) / np.sqrt(np.mean(trimmed_noise_wav**2))) - snr_d
+                )
                 < 1e-3
             )
 
@@ -534,11 +546,15 @@ def create_aligned_noisy_adaptation_data_parallel(
 
             # save
             os.makedirs(NOISE_ADDED_WAV_FILE_PATH_PREFIX, exist_ok=True)
+            # 同一のファイル名が存在しないことを確認する
+            assert not os.path.exists(os.path.join(NOISE_ADDED_WAV_FILE_PATH_PREFIX, noise_added_key + ".wav"))
             noise_added_wav_file_path = os.path.join(NOISE_ADDED_WAV_FILE_PATH_PREFIX, noise_added_key + ".wav")
             torchaudio.save(filepath=noise_added_wav_file_path, src=noise_added_wav, sample_rate=clean_sampling_rate)
 
             if speaker not in result_json:
                 result_json[speaker] = {}
+            # 同一のnoise_added_keyが存在しないことを確認する
+            assert noise_added_key not in result_json[speaker]
 
             result_json[speaker][noise_added_key] = {}
             result_json[speaker][noise_added_key]["wav_file_path"] = noise_added_wav_file_path

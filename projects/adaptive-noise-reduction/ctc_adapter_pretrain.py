@@ -7,7 +7,7 @@ import mlflow
 import torch
 from conf import logging_conf
 from ctc_model import CausalConformerVADAdapterCTCModel
-from data import CSJDataset, CSJVADPretrainDataset, get_dataloader, get_vad_pretrain_dataloader
+from data import CSJVADPretrainDataset, get_vad_pretrain_dataloader
 from hydra.core.hydra_config import HydraConfig
 from modules.spec_aug import SpecAug
 from omegaconf import DictConfig
@@ -116,7 +116,7 @@ def main(cfg: DictConfig):
                 tokenizer=tokenizer,
                 spec_aug=spec_aug,
             )
-            dev_dataset = CSJDataset(
+            dev_dataset = CSJVADPretrainDataset(
                 json_file_path=cfg.dataset.dev.json_file_path,
                 resampling_rate=16000,
                 tokenizer=tokenizer,
@@ -134,7 +134,7 @@ def main(cfg: DictConfig):
             pad_idx=tokenizer.pad_token_id,
         )
 
-        dev_dataloader = get_dataloader(
+        dev_dataloader = get_vad_pretrain_dataloader(
             dev_dataset,
             batch_sec=cfg.train.batch_sec,
             batch_text_len=cfg.train.batch_text_len,
@@ -245,7 +245,7 @@ def main(cfg: DictConfig):
             bar.set_description(f"Valid Epoch {i}  ")
             torch.cuda.empty_cache()
             with torch.no_grad():
-                for _, bx, by, bx_len, by_len, baudio_sec in dev_dataloader:
+                for _, bx, by, bx_len, by_len, baudio_sec, bsubsampled_vad, bsubsampled_vad_len in dev_dataloader:
 
                     if i >= 5 and i % 5 == 0 and cfg.do_decode:
                         if cfg.decoder.type == "streaming_greedy":
@@ -279,7 +279,7 @@ def main(cfg: DictConfig):
                         "model_args": model_args,
                         "optimizer": optimizer.state_dict(),
                         "scheduler": scheduler.state_dict() if cfg.train.optimize.do_schedule else None,
-                        "dev_cer": epoch_dev_cer / len(dev_dataset),
+                        "dev_cer": epoch_dev_cer / len(dev_dataset) if cfg.do_decode else None,
                     },
                     os.path.join(mlflow_run.info.artifact_uri, f"model_{i}.pth"),
                 )

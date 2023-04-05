@@ -7,7 +7,7 @@ import mlflow
 import torch
 from conf import logging_conf
 from ctc_model import CausalConformerCTCModel
-from data import CSJDataset, YesNoDataset, get_dataloader
+from data import CSJVADPretrainDataset, get_vad_pretrain_dataloader
 from hydra.core.hydra_config import HydraConfig
 from modules.spec_aug import SpecAug
 from omegaconf import DictConfig
@@ -84,39 +84,29 @@ def main(cfg: DictConfig):
         )
         vocab_size = tokenizer.num_tokens
 
-        if cfg.dataset.name == "YesNo":
-            train_dataset = YesNoDataset(
-                json_file_path=cfg.dataset.train.json_file_path,
-                resampling_rate=16000,
-                tokenizer=tokenizer,
-            )
-            dev_dataset = YesNoDataset(
-                json_file_path=cfg.dataset.dev.json_file_path,
-                resampling_rate=16000,
-                tokenizer=tokenizer,
-            )
-        elif cfg.dataset.name == "CSJ":
+        if cfg.dataset.name == "CSJ":
             spec_aug = SpecAug(
                 freq_mask_max_length=cfg.model.spec_aug.freq_mask_max_length,
                 time_mask_max_length=cfg.model.spec_aug.time_mask_max_length,
                 num_freq_mask=cfg.model.spec_aug.num_freq_mask,
                 num_time_mask=cfg.model.spec_aug.num_time_mask,
             )
-            train_dataset = CSJDataset(
+            train_dataset = CSJVADPretrainDataset(
                 json_file_path=cfg.dataset.train.json_file_path,
                 resampling_rate=16000,
                 tokenizer=tokenizer,
                 spec_aug=spec_aug,
             )
-            dev_dataset = CSJDataset(
+            dev_dataset = CSJVADPretrainDataset(
                 json_file_path=cfg.dataset.dev.json_file_path,
                 resampling_rate=16000,
                 tokenizer=tokenizer,
+                spec_aug=None,
             )
         else:
             raise NotImplementedError
 
-        train_dataloader = get_dataloader(
+        train_dataloader = get_vad_pretrain_dataloader(
             train_dataset,
             batch_sec=cfg.train.batch_sec,
             batch_text_len=cfg.train.batch_text_len,
@@ -124,7 +114,8 @@ def main(cfg: DictConfig):
             pin_memory=True,
             pad_idx=tokenizer.pad_token_id,
         )
-        dev_dataloader = get_dataloader(
+
+        dev_dataloader = get_vad_pretrain_dataloader(
             dev_dataset,
             batch_sec=cfg.train.batch_sec,
             batch_text_len=cfg.train.batch_text_len,
@@ -184,7 +175,7 @@ def main(cfg: DictConfig):
             accum_sec = 0
             bar = tqdm(total=len(train_dataset))
             bar.set_description(f"Train Epoch {i}  ")
-            for _, bx, by, bx_len, by_len, baudio_sec in train_dataloader:
+            for _, bx, by, bx_len, by_len, baudio_sec, bsubsampled_vad, bsubsampled_vad_len in train_dataloader:
                 accum_sec += sum(baudio_sec)
                 loss = forward(
                     cfg=cfg,
@@ -226,7 +217,7 @@ def main(cfg: DictConfig):
             bar.set_description(f"Valid Epoch {i}")
             torch.cuda.empty_cache()
             with torch.no_grad():
-                for _, bx, by, bx_len, by_len, baudio_sec in dev_dataloader:
+                for _, bx, by, bx_len, by_len, baudio_sec, bsubsampled_vad, bsubsampled_vad_len in dev_dataloader:
                     loss = forward(
                         cfg=cfg,
                         model=model,
@@ -239,7 +230,7 @@ def main(cfg: DictConfig):
 
                     epoch_dev_loss += loss.item() * bx.shape[0]
 
-                    if i >= 10 and i % 5 == 0 and cfg.do_decode:
+                    if i >= 5 and i % 5 == 0 and cfg.do_decode:
                         if cfg.decoder.type == "streaming_greedy":
                             bx = bx.to(DEVICE)
                             bhyp_token_ids = model.streaming_greedy_inference(bx=bx, bx_len=bx_len)
@@ -260,20 +251,20 @@ def main(cfg: DictConfig):
                 logger.info(f"Dev loss: {epoch_dev_loss / len(dev_dataset)}")
                 mlflow.log_metric("dev_loss", epoch_dev_loss / len(dev_dataset), step=i)
 
-                if i >= 10 and i % 5 == 0 and cfg.do_decode:
+                if i >= 5 and i % 5 == 0 and cfg.do_decode:
                     mlflow.log_metric("dev_cer", epoch_dev_cer / len(dev_dataset), step=i)
                     logger.info(f"Dev CER: {epoch_dev_cer / len(dev_dataset)}")
                     # mlflow.log_metric("dev_wer", epoch_dev_wer / len(dev_dataset), step=i)
                     # logger.info(f"Dev WER: {epoch_dev_wer / len(dev_dataset)}")
 
-            if i % 5 == 0:
+            if i >= 5 and i % 5 == 0:
                 torch.save(
                     {
                         "model": model.module.state_dict(),
                         "model_args": model_args,
                         "optimizer": optimizer.state_dict(),
                         "scheduler": scheduler.state_dict() if cfg.train.optimize.do_schedule else None,
-                        "dev_loss": epoch_dev_loss / len(dev_dataset),
+                        "dev_cer": epoch_dev_cer / len(dev_dataset) if cfg.do_decode else None,
                     },
                     os.path.join(mlflow_run.info.artifact_uri, f"model_{i}.pth"),
                 )
