@@ -18,13 +18,13 @@ model:
   encoder:
     input_size: 80
     subsampled_input_size: 512
-    num_conformer_blocks: 8
+    num_conformer_blocks: 10
     ff_hidden_size: 2048
     conv_hidden_size: 2048
     conv_kernel_size: 15
     mha_num_heads: 8
-    num_adapter_blocks: 4 # 合計12層になるように調整
-    adapter_hidden_size: 256
+    num_adapter_blocks: 2 # 合計12層になるように調整
+    adapter_hidden_size: 128
     dropout: 0.1 # ここを大きくすることで過学習を抑える
     subsampling_kernel_size1: 3
     subsampling_stride1: 2

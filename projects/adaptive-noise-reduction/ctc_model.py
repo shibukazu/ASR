@@ -189,3 +189,44 @@ class CausalConformerVADAdapterCTCModel(torch.nn.Module):
                     prev_token_idx = hyp_ctc_token_idx
             batch_hyp_token_idxs.append(hyp_token_idxs)
         return batch_hyp_token_idxs
+
+    def streaming_greedy_inference(self, bx, bx_len, num_previous_frames):
+        batch_hyp_token_idxs = []
+        BUFFER_SIZE = 10  # BUFFER_SIZEフレームごとに推論する
+        NUM_PREVIOUS_FRAMES = num_previous_frames
+
+        for batch_idx in range(bx.shape[0]):
+            hyp_token_idxs = []
+            prev_token_idx = -1
+            x_len = bx_len[batch_idx]
+            x = bx[batch_idx, :x_len, :]  # (T, D)
+            buffer = []
+            for i in tqdm(range(5, x_len)):
+                if NUM_PREVIOUS_FRAMES == "all":
+                    buffer.append(x[: i + 1])
+                else:
+                    buffer.append(x[max(i - NUM_PREVIOUS_FRAMES, 0) : i + 1])
+                if len(buffer) == BUFFER_SIZE or i == x_len - 1:
+                    buffer_bx = torch.nn.utils.rnn.pad_sequence(buffer, batch_first=True, padding_value=0.0).to(
+                        bx.device
+                    )
+                    buffer_bx_len = torch.tensor([len(b) for b in buffer])
+                    buffer_blog_probs, buffer_bsubsampled_x_len, _ = self.forward(buffer_bx, buffer_bx_len)
+                    for j in range(len(buffer)):
+                        hyp_ctc_token_idx = torch.argmax(
+                            buffer_blog_probs[j, buffer_bsubsampled_x_len[j] - 1, :], dim=-1
+                        )  # 現在の時刻の推論結果を知りたいだけなので、最後の時刻のみを見る
+                        if hyp_ctc_token_idx == prev_token_idx:
+                            # このときはスキップ
+                            continue
+                        elif hyp_ctc_token_idx == self.blank_idx:
+                            # このときはprev_token_idxのみ更新
+                            # これによって、同一トークンの連続が許容される
+                            prev_token_idx = hyp_ctc_token_idx
+                            continue
+                        else:
+                            hyp_token_idxs.append(hyp_ctc_token_idx.item())
+                            prev_token_idx = hyp_ctc_token_idx
+                    buffer = []
+            batch_hyp_token_idxs.append(hyp_token_idxs)
+        return batch_hyp_token_idxs
