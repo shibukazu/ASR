@@ -13,7 +13,7 @@ tokenizer:
 model:
   name:
     "CausalConformerVADAdapterCTC"
-  pretrained_model_path: "./artifacts/ctc_vad_adapter_csj_pretrain/d0c22404e4aa4653aa3685a44b710e93/artifacts/model_20.pth"
+  pretrained_model_path: "./artifacts/ctc_vad_adapter_csj_pretrain/cf98c7bc4c01492c8b4aee3f7a131573/artifacts/model_20.pth"
   num_previous_frames: 500
   subsampling_kernel_size1: 3
   subsampling_stride1: 2

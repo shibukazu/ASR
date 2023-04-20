@@ -166,7 +166,7 @@ def main(cfg: DictConfig):
         count = 0
         for sample_idx, (_, x, y, x_len, y_len, audio_sec, vad, vad_len) in enumerate(adaptation_dataset):
             bar = tqdm(total=len(x))
-            bar.set_description(f"{sample_idx} th Sample: ")
+            bar.set_description(f"{sample_idx} / {len(adaptation_dataset)} th Sample: ")
             torch.cuda.empty_cache()
 
             # data間での独立性を担保する
@@ -238,6 +238,10 @@ def main(cfg: DictConfig):
             total_improvement += improvement
             count += 1
             logger.info(f"improvement: {improvement}")
+            mlflow.log_metric("improvement", improvement, step=sample_idx)
+            mlflow.log_metric(
+                "avg_improvement", total_improvement.item() / count if count > 0 else 0.0, step=sample_idx
+            )
 
 
 if __name__ == "__main__":

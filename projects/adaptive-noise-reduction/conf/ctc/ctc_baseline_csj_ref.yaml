@@ -43,7 +43,7 @@ decoder:
 do_decode: true
 
 train:
-  num_epoch: 20
+  num_epoch: 40
   batch_sec: 400
   batch_text_len: 1500
   accum_sec: 3000
