@@ -5,11 +5,11 @@ hydra:
 dataset:
   name: "CSJ"
   train:
-    json_file_path: "./json/vad/noisy_pretrain_develop_with_subsampled_vad.json"
+    json_file_path: "./json/vad/noisy_pretrain_with_subsampled_vad.json"
   dev:
-    json_file_path: "./json/vad/noisy_pretrain_develop_with_subsampled_vad.json"
+    json_file_path: "./json/vad/noisy_pretrain_eval_with_subsampled_vad.json"
   dev_ref:
-    json_file_path: "./json/vad/noisy_pretrain_develop_with_subsampled_vad.json"
+    json_file_path: "./json/vad/noisy_pretrain_eval_ref_with_subsampled_vad.json"
 
 tokenizer:
   model_file_path: "./vocabs/csj_train_nodup_sp_4096.bpe.model"
@@ -21,8 +21,8 @@ model:
     input_size: 80
     subsampled_input_size: 512
     num_conformer_blocks: 12
-    ff_hidden_size: 2048
-    conv_hidden_size: 2048
+    ff_hidden_size: 1024
+    conv_hidden_size: 1024
     conv_kernel_size: 15
     mha_num_heads: 8
     dropout: 0.1 # ここを大きくすることで過学習を抑える
@@ -46,8 +46,8 @@ do_decode: true
 
 train:
   num_epoch: 30
-  batch_sec: 300
-  batch_text_len: 1500
+  batch_sec: 800
+  batch_text_len: 2500
   accum_sec: 3000
   optimize:
     max_grad_norm: 5.0

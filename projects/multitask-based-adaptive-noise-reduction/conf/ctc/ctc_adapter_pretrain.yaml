@@ -1,0 +1,48 @@
+hydra:
+  run:
+    dir: /home/shibutani/fs/ASR/projects/adaptive-noise-reduction/outputs/${now:%Y-%m-%d}/${now:%H-%M-%S}
+
+dataset:
+  name: "CSJ"
+  train:
+    json_file_path: "./json/vad/noisy_pretrain_with_subsampled_vad.json"
+  eval:
+    json_file_path: "./json/vad/noisy_pretrain_eval_with_subsampled_vad.json"
+  eval_ref:
+    json_file_path: "./json/vad/noisy_pretrain_eval_ref_with_subsampled_vad.json"
+
+tokenizer:
+  model_file_path: "./vocabs/csj_train_nodup_sp_4096.bpe.model"
+
+model:
+  name:
+    "CausalConformerMultitaskCTCAdapterModel"
+  pretrained_model_path: "./artifacts/ctc_pretrain/d6d8d760048d46acbe285036d6be9f52/artifacts/model_20.pth"
+  adapter_hidden_size: 128
+  num_adapter_blocks: 4
+  adapter_init: "identity" # identity or random
+  num_previous_frames: 500
+  subsampling_kernel_size1: 3
+  subsampling_stride1: 2
+  subsampling_kernel_size2: 3
+  subsampling_stride2: 2
+  spec_aug:
+    num_freq_mask: 2
+    freq_mask_max_length: 30
+    num_time_mask: 2
+    time_mask_max_length: 40
+
+decoder:
+  type: "greedy"
+
+train:
+  num_epoch: 20
+  batch_sec: 600
+  batch_text_len: 2000
+  accum_sec: 3200
+  optimize:
+    lr: 0.5
+    weight_decay: 0.000001
+    eps: 0.000000001
+    beta1: 0.9
+    beta2: 0.98

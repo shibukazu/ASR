@@ -1,5 +1,5 @@
 import torch
-from modules.encoder import CausalConformerEncoder
+from modules.encoder import CausalConformerAdapterEncoder, CausalConformerEncoder
 from tqdm import tqdm
 
 
@@ -138,10 +138,12 @@ class CausalConformerMultitaskCTCAdapterModel(torch.nn.Module):
         is_timewise_ln,
         vocab_size,
         blank_idx,
+        adapter_hidden_size,
+        num_adapter_blocks,
     ):
         super().__init__()
 
-        self.encoder = CausalConformerEncoder(
+        self.encoder = CausalConformerAdapterEncoder(
             input_size=input_size,
             subsampled_input_size=subsampled_input_size,
             num_conformer_blocks=num_conformer_blocks,
@@ -156,6 +158,8 @@ class CausalConformerMultitaskCTCAdapterModel(torch.nn.Module):
             subsampling_stride2=subsampling_stride2,
             num_previous_frames=num_previous_frames,
             is_timewise_ln=is_timewise_ln,
+            adapter_hidden_size=adapter_hidden_size,
+            num_adapter_blocks=num_adapter_blocks,
         )
 
         self.ctc_ff = torch.nn.Linear(subsampled_input_size, vocab_size)

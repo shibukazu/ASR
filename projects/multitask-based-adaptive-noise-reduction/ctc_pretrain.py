@@ -38,16 +38,12 @@ def forward(
     bx_len,
     by,
     by_len,
-    bsubsampled_vad,
-    bsubsampled_vad_len,
     ctc_criterion,
-    bce_criterion,
 ):
     bx = bx.to(DEVICE)
     by = by.to(DEVICE)
-    bsubsampled_vad = bsubsampled_vad.to(DEVICE)
 
-    bctc_log_probs, bsubsampled_x_len, bsubsampled_vad_probs = model(
+    bctc_log_probs, bsubsampled_x_len, _ = model(
         bx=bx,
         bx_len=bx_len,
     )  # bvad_probs: [B, T]
@@ -59,10 +55,7 @@ def forward(
     )
     ctc_loss = ctc_loss / bx.shape[0]
 
-    vad_loss = bce_criterion(bsubsampled_vad_probs.squeeze(-1), bsubsampled_vad)
-    vad_loss = vad_loss / bx.shape[0]
-
-    loss = ctc_loss + vad_loss
+    loss = ctc_loss
 
     return loss
 
@@ -186,7 +179,6 @@ def main(cfg: DictConfig):
             )
 
         ctc_criterion = torch.nn.CTCLoss(blank=tokenizer.blank_token_id, reduction="sum")
-        bce_criterion = torch.nn.BCELoss(reduction="sum")
 
         NUM_EPOCH = cfg.train.num_epoch
         num_steps = 0
@@ -208,10 +200,7 @@ def main(cfg: DictConfig):
                     by=by,
                     bx_len=bx_len,
                     by_len=by_len,
-                    bsubsampled_vad=bsubsampled_vad,
-                    bsubsampled_vad_len=bsubsampled_vad_len,
                     ctc_criterion=ctc_criterion,
-                    bce_criterion=bce_criterion,
                 )
                 loss.backward()
                 epoch_train_loss += loss.item() * bx.shape[0]

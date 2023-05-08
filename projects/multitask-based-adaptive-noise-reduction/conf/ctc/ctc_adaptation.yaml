@@ -1,0 +1,34 @@
+hydra:
+  run:
+    dir: /home/shibutani/fs/ASR/projects/adaptive-noise-reduction/outputs/${now:%Y-%m-%d}/${now:%H-%M-%S}
+
+dataset:
+  name: "CSJ"
+  train:
+    json_file_path: "./json/vad/noisy_adaptation_with_subsampled_vad.json"
+
+tokenizer:
+  model_file_path: "./vocabs/csj_train_nodup_sp_4096.bpe.model"
+
+model:
+  name:
+    "CausalConformerMultitaskCTCAdapterModel"
+  pretrained_model_path: "./artifacts/ctc_pretrain_develop/da43279010444e30ac133bcaf11909a3/artifacts/model_30.pth"
+  adapter_hidden_size: 128
+  num_adapter_blocks: 2
+  adapter_init: "identity" # identity or random
+  num_previous_frames: 500
+  subsampling_kernel_size1: 3
+  subsampling_stride1: 2
+  subsampling_kernel_size2: 3
+  subsampling_stride2: 2
+
+train:
+  buffer_size: 10
+  accum_frame: 10
+  optimize:
+    lr: 0.00005
+    weight_decay: 0.000001
+    eps: 0.000000001
+    beta1: 0.9
+    beta2: 0.98
