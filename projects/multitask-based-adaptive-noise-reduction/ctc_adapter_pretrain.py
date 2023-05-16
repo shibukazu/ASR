@@ -35,23 +35,35 @@ def forward(
     model,
     bx,
     bx_len,
+    by,
+    by_len,
     bsubsampled_vad,
     bsubsampled_vad_len,
+    ctc_criterion,
     bce_criterion,
 ):
     bx = bx.to(DEVICE)
+    by = by.to(DEVICE)
     bsubsampled_vad = bsubsampled_vad.to(DEVICE)
 
-    _, _, bsubsampled_vad_probs = model(
+    bctc_log_probs, bsubsampled_x_len, bsubsampled_vad_probs = model(
         bx=bx,
         bx_len=bx_len,
     )  # bvad_probs: [B, T]
+    ctc_loss = ctc_criterion(
+        log_probs=bctc_log_probs.transpose(0, 1),
+        targets=by,
+        input_lengths=bsubsampled_x_len.to(DEVICE),
+        target_lengths=by_len.to(DEVICE),
+    )
+    ctc_loss = ctc_loss / bx.shape[0]
+
     raw_vad_loss = bce_criterion(bsubsampled_vad_probs.squeeze(-1), bsubsampled_vad)  # [B, T]
     for i, subsampled_vad_len in enumerate(bsubsampled_vad_len):
         raw_vad_loss[i, subsampled_vad_len:] = 0
     vad_loss = raw_vad_loss.sum() / bx.shape[0]
 
-    loss = vad_loss
+    loss = vad_loss + ctc_loss
 
     return loss
 
@@ -223,8 +235,17 @@ def main(cfg: DictConfig):
                 eps=cfg.train.optimize.eps,
             )
             optimizers.append(optimizer)
+        vad_ff_optimizer = torch.optim.Adam(
+            pretrained_model.vad_ff.parameters(),
+            lr=cfg.train.optimize.lr,
+            weight_decay=cfg.train.optimize.weight_decay,
+            betas=(cfg.train.optimize.beta1, cfg.train.optimize.beta2),
+            eps=cfg.train.optimize.eps,
+        )
+        optimizers.append(vad_ff_optimizer)
 
         bce_criterion = torch.nn.BCELoss(reduction="none")
+        ctc_criterion = torch.nn.CTCLoss(blank=tokenizer.blank_token_id, reduction="sum")
 
         NUM_EPOCH = cfg.train.num_epoch
         num_steps = 0
@@ -248,8 +269,11 @@ def main(cfg: DictConfig):
                     model=pretrained_model,
                     bx=bx,
                     bx_len=bx_len,
+                    by=by,
+                    by_len=by_len,
                     bsubsampled_vad=bsubsampled_vad,
                     bsubsampled_vad_len=bsubsampled_vad_len,
+                    ctc_criterion=ctc_criterion,
                     bce_criterion=bce_criterion,
                 )
                 loss.backward()

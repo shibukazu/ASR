@@ -41,7 +41,7 @@ train:
   batch_text_len: 400
   accum_sec: 360
   optimize:
-    lr: 0.5
+    lr: 0.0005
     weight_decay: 0.000001
     eps: 0.000000001
     beta1: 0.9

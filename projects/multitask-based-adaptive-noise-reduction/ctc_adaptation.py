@@ -135,51 +135,22 @@ def main(cfg: DictConfig):
 
         # torch.autograd.set_detect_anomaly(True)
         if cfg.model.name == "CausalConformerMultitaskCTCAdapterModel":
-            pretrained_model_path = cfg.model.pretrained_model_path
-            with open(pretrained_model_path, "rb") as f:
+            adapter_pretrained_model_path = cfg.model.pretrained_model_path
+            with open(adapter_pretrained_model_path, "rb") as f:
                 cpt = torch.load(f)
-            pretrained_model_state = cpt["model"]
-            pretrained_model_args = cpt["model_args"]
-            pretrained_model = CausalConformerMultitaskCTCAdapterModel(
-                **pretrained_model_args,
-                adapter_hidden_size=cfg.model.adapter_hidden_size,
-                num_adapter_blocks=cfg.model.num_adapter_blocks,
-            ).to(DEVICE)
-            # モデルのロードを行う
-            # 一部のblockをadapter付きブロックに置き換えているため、手動でロードする
-            for name, param in pretrained_model.named_parameters():
-                if name.startswith("encoder.adapter_blocks."):
-                    if ".adapter." in name:
-
-                        if cfg.model.adapter_init == "identity":
-                            if "weight" in name:
-                                torch.nn.init.eye_(param)
-                            elif "bias" in name:
-                                torch.nn.init.zeros_(param)
-                            else:
-                                raise NotImplementedError
-                        elif cfg.model.adapter_init == "random":
-                            pass
-                        else:
-                            raise NotImplementedError
-                    else:
-                        idx = int(name.split(".")[2])
-                        modified_idx = idx
-                        modified_name = name.replace(f".{idx}.", f".{modified_idx}.")
-                        modified_name = modified_name.replace("adapter_blocks", "conformer_blocks")
-                        param.data = pretrained_model_state[modified_name]
-                elif name.startswith("encoder.conformer_blocks."):
-                    idx = int(name.split(".")[2])
-                    modified_idx = cfg.model.num_adapter_blocks + idx
-                    modified_name = name.replace(f".{idx}.", f".{modified_idx}.")
-                    param.data = pretrained_model_state[modified_name]
-                else:
-                    param.data = pretrained_model_state[name]
+            adapter_pretrained_model_state = cpt["model"]
+            adapter_pretrained_model_args = cpt["model_args"]
+            adapter_pretrained_model = CausalConformerMultitaskCTCAdapterModel(
+                **adapter_pretrained_model_args,
+            )
+            adapter_pretrained_model.load_state_dict(adapter_pretrained_model_state)
         else:
             raise NotImplementedError
-        pretrained_model = DataParallel(pretrained_model).to(DEVICE)
+        adapter_pretrained_model = DataParallel(adapter_pretrained_model)
 
         total_improvement = 0.0
+        total_prev_cer = 0.0
+        total_after_cer = 0.0
         count = 0
         for sample_idx, (_, x, y, x_len, y_len, audio_sec, vad, vad_len) in enumerate(adaptation_dataset):
             bar = tqdm(total=len(x))
@@ -187,15 +158,17 @@ def main(cfg: DictConfig):
             torch.cuda.empty_cache()
 
             # data間での独立性を担保する
-            model = copy.deepcopy(pretrained_model)
+            model = copy.deepcopy(adapter_pretrained_model)
+            model.to(DEVICE)
 
             # 適応前のCERを計算する
             prev_cer = eval(cfg, model, tokenizer, x, x_len, y, y_len)
+            total_prev_cer += prev_cer
             logger.info(f"prev_cer: {prev_cer}")
 
             # adapter専用のoptimizer, schedulerを用意する
             optimizers = []
-            for block_idx in range(len(pretrained_model.encoder.adapter_blocks)):
+            for block_idx in range(len(model.encoder.adapter_blocks)):
                 optimizer = torch.optim.Adam(
                     model.encoder.adapter_blocks[block_idx].adapter.parameters(),
                     lr=cfg.train.optimize.lr,
@@ -250,6 +223,7 @@ def main(cfg: DictConfig):
 
             # 適応後のCERを計算する
             after_cer = eval(cfg, model, tokenizer, x, x_len, y, y_len)
+            total_after_cer += after_cer
             logger.info(f"after_cer: {after_cer}")
 
             # improvementを計算する
@@ -261,7 +235,11 @@ def main(cfg: DictConfig):
             mlflow.log_metric(
                 "avg_improvement", total_improvement.item() / count if count > 0 else 0.0, step=sample_idx
             )
+            mlflow.log_metric("avg_prev_cer", total_prev_cer.item() / count if count > 0 else 0.0, step=sample_idx)
+            mlflow.log_metric("avg_after_cer", total_after_cer.item() / count if count > 0 else 0.0, step=sample_idx)
 
+            del model
 
+            
 if __name__ == "__main__":
     main()

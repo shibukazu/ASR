@@ -77,7 +77,7 @@ class CausalConformerAdapterBlock(torch.nn.Module):
         else:
             self.layer_norm = normalization.CausalLayerNormalization(input_size)
 
-        self.adapter = adapter.LinearAdapter(input_size, adapter_hidden_size)
+        self.adapter = adapter.BottleneckLinearAdapter(input_size, adapter_hidden_size)
 
     def forward(self, x, x_lengths):
         # x: [B, T, D]
@@ -91,9 +91,11 @@ class CausalConformerAdapterBlock(torch.nn.Module):
         x = x + res
         res = x
         x = self.mha_module(x, x_lengths)
+        _res = x
 
         x = self.adapter(x)
         # vad_loss = self.vad_loss(vad, y_vad)
+        x = x + _res
 
         x = x + res
         res = x

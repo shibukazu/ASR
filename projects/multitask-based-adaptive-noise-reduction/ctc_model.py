@@ -199,7 +199,7 @@ class CausalConformerMultitaskCTCAdapterModel(torch.nn.Module):
 
     def streaming_greedy_inference(self, bx, bx_len, num_previous_frames):
         batch_hyp_token_idxs = []
-        BUFFER_SIZE = 200  # BUFFER_SIZEフレームごとに推論する
+        BUFFER_SIZE = 500  # BUFFER_SIZEフレームごとに推論する
         NUM_PREVIOUS_FRAMES = num_previous_frames
 
         for batch_idx in range(bx.shape[0]):
