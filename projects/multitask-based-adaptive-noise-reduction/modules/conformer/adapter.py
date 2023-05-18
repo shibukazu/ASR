@@ -9,7 +9,6 @@ class BottleneckLinearAdapter(torch.nn.Module):
         self.w_u = torch.nn.Linear(hidden_size, input_size)
 
     def forward(self, bx):
-
         bx = self.w_d(bx)
         bx = self.activation(bx)
         bx = self.w_u(bx)
@@ -23,7 +22,6 @@ class LinearAdapter(torch.nn.Module):
         self.fc = torch.nn.Linear(input_size, hidden_size)
 
     def forward(self, bx):
-
         bx = self.fc(bx)
 
         return bx

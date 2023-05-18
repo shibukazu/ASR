@@ -285,3 +285,43 @@ def concat_pretrain_eval_with_subsampled_vad_parallel(
 
     queue.put(result_json)
     return
+
+
+def array_concat_pretrain_eval_with_subsampled_vad_parallel(
+    data_json,
+    speakers,
+    queue,
+):
+    result_json = {}
+
+    for speaker in tqdm(speakers):
+        keys = list(data_json[speaker].keys())
+        for key in keys:
+            identifier = key.split("-")[0] + "-" + key.split("-")[1]  # speaker + noise idx
+            if identifier not in result_json:
+                result_json[identifier] = {}
+                result_json[identifier]["sampling_rate"] = data_json[speaker][key]["sampling_rate"]
+                result_json[identifier]["audio_sec"] = 0
+                result_json[identifier]["wav_file_paths"] = []
+                result_json[identifier]["raw_transcripts"] = []
+                result_json[identifier]["vads"] = []
+                result_json[identifier]["subsampled_vads"] = []
+                result_json[identifier]["metainfos"] = []
+
+            result_json[identifier]["audio_sec"] += data_json[speaker][key]["audio_sec"]
+            result_json[identifier]["wav_file_paths"].append(data_json[speaker][key]["wav_file_path"])
+            result_json[identifier]["raw_transcripts"].append(data_json[speaker][key]["raw_transcript"])
+            result_json[identifier]["vads"].append(data_json[speaker][key]["vad"])
+            result_json[identifier]["subsampled_vads"].append(data_json[speaker][key]["subsampled_vad"])
+            metainfo = {
+                "noise_wav_file_path": data_json[speaker][key]["metainfo"]["noise_wav_file_path"],
+                "snr_d": data_json[speaker][key]["metainfo"]["snr_d"],
+            }
+            result_json[identifier]["metainfos"].append(metainfo)
+
+            assert result_json[identifier]["sampling_rate"] == data_json[speaker][key]["sampling_rate"]
+            assert abs(metainfo["snr_d"] - data_json[speaker][key]["metainfo"]["snr_d"]) < 1e-3
+            assert metainfo["noise_wav_file_path"] == data_json[speaker][key]["metainfo"]["noise_wav_file_path"]
+
+    queue.put(result_json)
+    return

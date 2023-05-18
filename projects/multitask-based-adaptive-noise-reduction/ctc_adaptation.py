@@ -5,7 +5,11 @@ import hydra
 import mlflow
 import torch
 from conf import logging_conf
-from ctc_model import CausalConformerMultitaskCTCAdapterModel
+from ctc_model import (
+    CausalConformerMultitaskCTCAdapterModel,
+    CausalConformerMultitaskCTCLLAdapterModel,
+    CausalConformerMultitaskCTCModel,
+)
 from data import CSJVADAdaptationDataset
 from hydra.core.hydra_config import HydraConfig
 from omegaconf import DictConfig
@@ -144,6 +148,28 @@ def main(cfg: DictConfig):
                 **adapter_pretrained_model_args,
             )
             adapter_pretrained_model.load_state_dict(adapter_pretrained_model_state)
+        elif cfg.model.name == "CausalConformerMultitaskCTCLLAdapterModel":
+            base_model_path = cfg.model.base_model_path
+            with open(base_model_path, "rb") as f:
+                base_model_cpt = torch.load(f)
+            base_model_state = base_model_cpt["model"]
+            base_model_args = base_model_cpt["model_args"]
+            base_model = CausalConformerMultitaskCTCModel(
+                **base_model_args,
+            )
+            base_model.load_state_dict(base_model_state)
+
+            adapter_pretrained_model_path = cfg.model.model_path
+            with open(adapter_pretrained_model_path, "rb") as f:
+                adapter_pretrained_model_cpt = torch.load(f)
+            adapter_state = adapter_pretrained_model_cpt["adapter"]
+            adapter_pretrained_model_args = adapter_pretrained_model_cpt["model_args"]
+            adapter_pretrained_model = CausalConformerMultitaskCTCLLAdapterModel(
+                **adapter_pretrained_model_args,
+            )
+
+            adapter_pretrained_model.base_model_injection(base_model)
+            adapter_pretrained_model.adapter.load_state_dict(adapter_state)
         else:
             raise NotImplementedError
         adapter_pretrained_model = DataParallel(adapter_pretrained_model)
@@ -161,22 +187,34 @@ def main(cfg: DictConfig):
             model = copy.deepcopy(adapter_pretrained_model)
             model.to(DEVICE)
 
-            # 適応前のCERを計算する
-            prev_cer = eval(cfg, model, tokenizer, x, x_len, y, y_len)
-            total_prev_cer += prev_cer
-            logger.info(f"prev_cer: {prev_cer}")
-
             # adapter専用のoptimizer, schedulerを用意する
             optimizers = []
-            for block_idx in range(len(model.encoder.adapter_blocks)):
-                optimizer = torch.optim.Adam(
-                    model.encoder.adapter_blocks[block_idx].adapter.parameters(),
+            if cfg.model.name == "CausalConformerMultitaskCTCAdapterModel":
+                for block_idx in range(len(model.encoder.adapter_blocks)):
+                    optimizer = torch.optim.Adam(
+                        model.encoder.adapter_blocks[block_idx].adapter.parameters(),
+                        lr=cfg.train.optimize.lr,
+                        weight_decay=cfg.train.optimize.weight_decay,
+                        betas=(cfg.train.optimize.beta1, cfg.train.optimize.beta2),
+                        eps=cfg.train.optimize.eps,
+                    )
+                    optimizers.append(optimizer)
+            elif cfg.model.name == "CausalConformerMultitaskCTCLLAdapterModel":
+                adapter_optimizer = torch.optim.Adam(
+                    model.adapter.parameters(),
                     lr=cfg.train.optimize.lr,
                     weight_decay=cfg.train.optimize.weight_decay,
                     betas=(cfg.train.optimize.beta1, cfg.train.optimize.beta2),
                     eps=cfg.train.optimize.eps,
                 )
-                optimizers.append(optimizer)
+                optimizers.append(adapter_optimizer)
+            else:
+                raise NotImplementedError
+
+            # 適応前のCERを計算する
+            prev_cer = eval(cfg, model, tokenizer, x, x_len, y, y_len)
+            total_prev_cer += prev_cer
+            logger.info(f"prev_cer: {prev_cer}")
 
             # adaptationする
             model.train()
@@ -240,6 +278,6 @@ def main(cfg: DictConfig):
 
             del model
 
-            
+
 if __name__ == "__main__":
     main()

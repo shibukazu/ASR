@@ -5,7 +5,11 @@ import hydra
 import mlflow
 import torch
 from conf import logging_conf
-from ctc_model import CausalConformerMultitaskCTCAdapterModel
+from ctc_model import (
+    CausalConformerMultitaskCTCAdapterModel,
+    CausalConformerMultitaskCTCLLAdapterModel,
+    CausalConformerMultitaskCTCModel,
+)
 from data import CSJVADPretrainDataset, get_vad_pretrain_dataloader
 from hydra.core.hydra_config import HydraConfig
 from modules.spec_aug import SpecAug
@@ -221,28 +225,59 @@ def main(cfg: DictConfig):
                 else:
                     param.data = pretrained_model_state[name]
             assert adapter_count == cfg.model.num_adapter_blocks * 2, f"{adapter_count}"
+        elif cfg.model.name == "CausalConformerMultitaskCTCLLAdapterModel":
+            base_model_path = cfg.model.base_model_path
+            with open(base_model_path, "rb") as f:
+                cpt = torch.load(f)
+            base_model_state = cpt["model"]
+            base_model_args = cpt["model_args"]
+            base_model = CausalConformerMultitaskCTCModel(
+                **base_model_args,
+            )
+            base_model.load_state_dict(base_model_state)
+            model_args = {
+                "adapter_weight": cfg.model.adapter_weight,
+            }
+            model = CausalConformerMultitaskCTCLLAdapterModel(
+                **model_args,
+            ).to(DEVICE)
+            model.base_model_injection(base_model)
+
         else:
             raise NotImplementedError
-        pretrained_model = DataParallel(pretrained_model).to(DEVICE)
-        # adapter専用のoptimizer, schedulerを用意する
+
+        model = DataParallel(model).to(DEVICE)
         optimizers = []
-        for block_idx in range(len(pretrained_model.encoder.adapter_blocks)):
-            optimizer = torch.optim.Adam(
-                pretrained_model.encoder.adapter_blocks[block_idx].adapter.parameters(),
+        if cfg.model.name == "CausalConformerMultitaskCTCAdapterModel":
+            # adapter専用のoptimizer, schedulerを用意する
+            for block_idx in range(len(model.encoder.adapter_blocks)):
+                optimizer = torch.optim.Adam(
+                    model.encoder.adapter_blocks[block_idx].adapter.parameters(),
+                    lr=cfg.train.optimize.lr,
+                    weight_decay=cfg.train.optimize.weight_decay,
+                    betas=(cfg.train.optimize.beta1, cfg.train.optimize.beta2),
+                    eps=cfg.train.optimize.eps,
+                )
+                optimizers.append(optimizer)
+            vad_ff_optimizer = torch.optim.Adam(
+                model.vad_ff.parameters(),
                 lr=cfg.train.optimize.lr,
                 weight_decay=cfg.train.optimize.weight_decay,
                 betas=(cfg.train.optimize.beta1, cfg.train.optimize.beta2),
                 eps=cfg.train.optimize.eps,
             )
-            optimizers.append(optimizer)
-        vad_ff_optimizer = torch.optim.Adam(
-            pretrained_model.vad_ff.parameters(),
-            lr=cfg.train.optimize.lr,
-            weight_decay=cfg.train.optimize.weight_decay,
-            betas=(cfg.train.optimize.beta1, cfg.train.optimize.beta2),
-            eps=cfg.train.optimize.eps,
-        )
-        optimizers.append(vad_ff_optimizer)
+            optimizers.append(vad_ff_optimizer)
+        elif cfg.model.name == "CausalConformerMultitaskCTCLLAdapterModel":
+            adapter_optimizer = torch.optim.Adam(
+                model.adapter.parameters(),
+                lr=cfg.train.optimize.lr,
+                weight_decay=cfg.train.optimize.weight_decay,
+                betas=(cfg.train.optimize.beta1, cfg.train.optimize.beta2),
+                eps=cfg.train.optimize.eps,
+            )
+            optimizers.append(adapter_optimizer)
+        else:
+            raise NotImplementedError
 
         bce_criterion = torch.nn.BCELoss(reduction="none")
         ctc_criterion = torch.nn.CTCLoss(blank=tokenizer.blank_token_id, reduction="sum")
@@ -252,11 +287,11 @@ def main(cfg: DictConfig):
 
         for i in range(1, NUM_EPOCH + 1):
             # --- start pre eval ---
-            prev_cer = eval(cfg, pretrained_model, tokenizer, eval_dataloader)
-            prev_ref_cer = eval(cfg, pretrained_model, tokenizer, eval_ref_dataloader)
+            prev_cer = eval(cfg, model, tokenizer, eval_dataloader)
+            prev_ref_cer = eval(cfg, model, tokenizer, eval_ref_dataloader)
 
             # --- start adapter pretrain ---
-            pretrained_model.train()
+            model.train()
             torch.cuda.empty_cache()
             epoch_train_loss = 0
             accum_sec = 0
@@ -266,7 +301,7 @@ def main(cfg: DictConfig):
                 accum_sec += sum(baudio_sec)
                 loss = forward(
                     cfg=cfg,
-                    model=pretrained_model,
+                    model=model,
                     bx=bx,
                     bx_len=bx_len,
                     by=by,
@@ -279,8 +314,7 @@ def main(cfg: DictConfig):
                 loss.backward()
                 epoch_train_loss += loss.item() * bx.shape[0]
 
-                for param_group in optimizer.param_groups:
-                    bar.set_postfix({"loss": loss.item(), "step": num_steps})
+                bar.set_postfix({"loss": loss.item(), "step": num_steps})
                 bar.update(bx.shape[0])
 
                 if accum_sec > cfg.train.accum_sec:
@@ -291,8 +325,8 @@ def main(cfg: DictConfig):
                     accum_sec = 0
 
             # --- start after eval ---
-            after_cer = eval(cfg, pretrained_model, tokenizer, eval_dataloader)
-            after_ref_cer = eval(cfg, pretrained_model, tokenizer, eval_ref_dataloader)
+            after_cer = eval(cfg, model, tokenizer, eval_dataloader)
+            after_ref_cer = eval(cfg, model, tokenizer, eval_ref_dataloader)
 
             improvement = prev_cer - after_cer
             ref_improvement = prev_ref_cer - after_ref_cer
@@ -314,14 +348,24 @@ def main(cfg: DictConfig):
             logger.info(f"Epoch {i}  ref_improvement: {ref_improvement}")
             mlflow.log_metric("ref_improvement", ref_improvement, step=i)
 
-            torch.save(
-                {
-                    "model": pretrained_model.module.state_dict(),
-                    "model_args": pretrained_model_args,
-                    "optimizer": optimizer.state_dict(),
-                },
-                os.path.join(mlflow_run.info.artifact_uri, f"model_{i}.pth"),
-            )
+            if cfg.model.name == "CausalConformerMultitaskCTCAdapterModel":
+                torch.save(
+                    {
+                        "model": model.module.state_dict(),
+                        "model_args": model_args,
+                        "optimizer": optimizer.state_dict(),
+                    },
+                    os.path.join(mlflow_run.info.artifact_uri, f"model_{i}.pth"),
+                )
+            elif cfg.model.name == "CausalConformerMultitaskCTCLLAdapterModel":
+                torch.save(
+                    {
+                        "adapter": model.module.adapter.state_dict(),
+                        "model_args": model_args,
+                        "optimizer": optimizer.state_dict(),
+                    },
+                    os.path.join(mlflow_run.info.artifact_uri, f"adapter_{i}.pth"),
+                )
 
 
 if __name__ == "__main__":

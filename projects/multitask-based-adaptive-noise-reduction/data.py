@@ -255,6 +255,98 @@ class CSJVADAdaptationDataset(torch.utils.data.Dataset):
         return text_len
 
 
+class CSJVAD1PathAdaptationDataset(torch.utils.data.Dataset):
+    def __init__(
+        self,
+        json_file_path: str,
+        tokenizer: SentencePieceTokenizer,
+        resampling_rate: int = 16000,
+        spec_aug: SpecAug = None,
+    ):
+        super().__init__()
+        with open(json_file_path) as f:
+            self.json = json.load(f)
+        self.keys = list(self.json.keys())
+        self.spec_aug = spec_aug
+        self.tokenizer = tokenizer
+        self.resampling_rate = resampling_rate
+        self.mel_spec_converter = torchaudio.transforms.MelSpectrogram(
+            # スペクトル設定
+            sample_rate=self.resampling_rate,
+            n_fft=400,
+            # スペクトログラム設定
+            win_length=400,
+            hop_length=160,
+            window_fn=torch.hann_window,
+            # メルスペクトログラム設定
+            n_mels=80,
+        )
+        self.amplitude_to_db = torchaudio.transforms.AmplitudeToDB(stype="power")
+
+    def __len__(self):
+        return len(self.json)
+
+    def __getitem__(self, idx):
+        key = self.keys[idx]
+        data = self.json[key]
+        _wav_file_paths, _audio_sec, _raw_transcripts, _vads, _subsampled_vads = (
+            data["wav_file_paths"],
+            data["audio_sec"],
+            data["raw_transcripts"],
+            data["vads"],
+            data["subsampled_vads"],
+        )
+        xs, x_lens = [], []
+        ys, y_lens = [], []
+        subsampled_vads, subsampled_vad_lens = [], []
+        vads, vad_lens = [], []
+        audio_sec = _audio_sec
+        num_wav_files = len(_wav_file_paths)
+        for i in range(num_wav_files):
+            vad = _vads[i]
+            vad = torch.tensor(vad, dtype=torch.float32)
+            vads.append(vad)
+            vad_len = len(vad)
+            vad_len = torch.tensor(len(vad), dtype=torch.int32)
+            vad_lens.append(vad_len)
+            subsampled_vad = _subsampled_vads[i]
+            subsampled_vad = torch.tensor(subsampled_vad, dtype=torch.float32)
+            subsampled_vads.append(subsampled_vad)
+            subsampled_vad_len = len(subsampled_vad)
+            subsampled_vad_len = torch.tensor(len(subsampled_vad), dtype=torch.int32)
+            subsampled_vad_lens.append(subsampled_vad_len)
+
+            wav_file_path = _wav_file_paths[i]
+            audio, sampling_rate = torchaudio.load(wav_file_path)
+            audio = audio.flatten()
+            resampler = Resample(sampling_rate, self.resampling_rate)
+            resampled_audio = resampler(audio)
+
+            mel_spec = self.mel_spec_converter(resampled_audio)
+            mel_spec_db = self.amplitude_to_db(mel_spec)
+
+            x = mel_spec_db.transpose(0, 1)
+            x = x[: len(vad), :]
+            if self.spec_aug is not None:
+                x = self.spec_aug(x)
+            x_len = len(x)
+            x_len = torch.tensor(x_len, dtype=torch.int32)
+
+            xs.append(x)
+            x_lens.append(x_len)
+
+            raw_transcript = _raw_transcripts[i]
+            y = self.tokenizer.text_to_token_ids(raw_transcript)
+            y = torch.tensor(y, dtype=torch.int32)
+            y_len = len(y)
+            y_len = torch.tensor(y_len, dtype=torch.int32)
+
+            ys.append(y)
+            y_lens.append(y_len)
+
+        return (idx, xs, ys, x_lens, y_lens, audio_sec, vads, subsampled_vads, subsampled_vads, subsampled_vad_lens)
+
+
 class RandomTimeTextLenFixedBatchSampler(torch.utils.data.Sampler):
     def __init__(self, dataset, batch_sec, batch_text_len):
         self.dataset = dataset
