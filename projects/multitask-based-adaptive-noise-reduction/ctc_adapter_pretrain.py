@@ -242,7 +242,17 @@ def main(cfg: DictConfig):
                 **model_args,
             ).to(DEVICE)
             model.base_model_injection(base_model)
-
+        elif cfg.model.name == "CausalConformerMultitaskCTCLNAdaptationModel":
+            base_model_path = cfg.model.base_model_path
+            with open(base_model_path, "rb") as f:
+                cpt = torch.load(f)
+            base_model_state = cpt["model"]
+            base_model_args = cpt["model_args"]
+            base_model = CausalConformerMultitaskCTCModel(
+                **base_model_args,
+            )
+            base_model.load_state_dict(base_model_state)
+            model = base_model
         else:
             raise NotImplementedError
 
@@ -276,6 +286,21 @@ def main(cfg: DictConfig):
                 eps=cfg.train.optimize.eps,
             )
             optimizers.append(adapter_optimizer)
+        elif cfg.model.name == "CausalConformerMultitaskCTCLNAdaptationModel":
+            for block_idx in cfg.model.adaptation_block_idxs:
+                parameters = [
+                    p
+                    for n, p in model.encoder.conformer_blocks[block_idx].named_parameters()
+                    if "layer_norm" in n
+                ]
+                optimizer = torch.optim.Adam(
+                    parameters,
+                    lr=cfg.train.optimize.lr,
+                    weight_decay=cfg.train.optimize.weight_decay,
+                    betas=(cfg.train.optimize.beta1, cfg.train.optimize.beta2),
+                    eps=cfg.train.optimize.eps,
+                )
+                optimizers.append(optimizer)
         else:
             raise NotImplementedError
 
@@ -366,6 +391,17 @@ def main(cfg: DictConfig):
                     },
                     os.path.join(mlflow_run.info.artifact_uri, f"adapter_{i}.pth"),
                 )
+            elif cfg.model.name == "CausalConformerMultitaskCTCLNAdaptationModel":
+                torch.save(
+                    {
+                        "model": model.module.state_dict(),
+                        "model_args": model_args,
+                        "optimizer": optimizer.state_dict(),
+                    },
+                    os.path.join(mlflow_run.info.artifact_uri, f"model_{i}.pth"),
+                )
+            else:
+                raise NotImplementedError
 
 
 if __name__ == "__main__":
