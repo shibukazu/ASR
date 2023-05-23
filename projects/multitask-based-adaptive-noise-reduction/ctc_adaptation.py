@@ -174,11 +174,14 @@ def main(cfg: DictConfig):
             raise NotImplementedError
         adapter_pretrained_model = DataParallel(adapter_pretrained_model)
 
-        total_improvement = 0.0
+        NUM_ADAPTATION = cfg.train.num_adaptation
+
         total_prev_cer = 0.0
-        total_after_cer = 0.0
+        total_after_cers = [0.0 for _ in range(NUM_ADAPTATION)]
+        total_improvements = [0.0 for _ in range(NUM_ADAPTATION)]
         count = 0
         for sample_idx, (_, x, y, x_len, y_len, audio_sec, vad, vad_len) in enumerate(adaptation_dataset):
+            count += 1
             bar = tqdm(total=len(x))
             bar.set_description(f"{sample_idx} / {len(adaptation_dataset)} th Sample: ")
             torch.cuda.empty_cache()
@@ -216,65 +219,77 @@ def main(cfg: DictConfig):
             total_prev_cer += prev_cer
             logger.info(f"prev_cer: {prev_cer}")
 
-            # adaptationする
-            model.train()
+            for adaptation_idx in range(NUM_ADAPTATION):
+                # adaptationする
+                model.train()
 
-            buffer_size = cfg.train.buffer_size
-            accum_frame = 0
-            for frame_idx in range(0, len(x), buffer_size):
-                accum_frame += buffer_size
-                _x = x[frame_idx : frame_idx + buffer_size]
-                _vad = vad[frame_idx : frame_idx + buffer_size]
-                _x_len = len(_x)
-                if _x_len < buffer_size:
-                    continue  # avoid error because of the last frame
-                _subsampled_vad = vad_subsample(
-                    vad_subsample(_vad, cfg.model.subsampling_kernel_size1, cfg.model.subsampling_stride1),
-                    cfg.model.subsampling_kernel_size2,
-                    cfg.model.subsampling_stride2,
-                )
-                _subsampled_vad = torch.tensor(_subsampled_vad, dtype=torch.float32)
-                _subsampled_vad_len = len(_subsampled_vad)
+                buffer_size = cfg.train.buffer_size
+                accum_frame = 0
+                for frame_idx in range(0, len(x), buffer_size):
+                    accum_frame += buffer_size
+                    _x = x[frame_idx : frame_idx + buffer_size]
+                    _vad = vad[frame_idx : frame_idx + buffer_size]
+                    _x_len = len(_x)
+                    if _x_len < buffer_size:
+                        continue  # avoid error because of the last frame
+                    _subsampled_vad = vad_subsample(
+                        vad_subsample(_vad, cfg.model.subsampling_kernel_size1, cfg.model.subsampling_stride1),
+                        cfg.model.subsampling_kernel_size2,
+                        cfg.model.subsampling_stride2,
+                    )
+                    _subsampled_vad = torch.tensor(_subsampled_vad, dtype=torch.float32)
+                    _subsampled_vad_len = len(_subsampled_vad)
 
-                bce_criterion = torch.nn.BCELoss(reduction="sum")
-                loss = forward(
-                    cfg=cfg,
-                    model=model,
-                    x=_x,
-                    x_len=_x_len,
-                    subsampled_vad=_subsampled_vad,
-                    subsampled_vad_len=_subsampled_vad_len,
-                    bce_criterion=bce_criterion,
-                )
-                loss.backward()
+                    bce_criterion = torch.nn.BCELoss(reduction="sum")
+                    loss = forward(
+                        cfg=cfg,
+                        model=model,
+                        x=_x,
+                        x_len=_x_len,
+                        subsampled_vad=_subsampled_vad,
+                        subsampled_vad_len=_subsampled_vad_len,
+                        bce_criterion=bce_criterion,
+                    )
+                    loss.backward()
+                    bar.update(_x_len)
+
+                    if accum_frame > cfg.train.accum_frame:
+                        for optimizer in optimizers:
+                            optimizer.step()
+                            optimizer.zero_grad()
+                        accum_frame = 0
+
+                # 適応後のCERを計算する
+                after_cer = eval(cfg, model, tokenizer, x, x_len, y, y_len)
+                logger.info(f"after_cer: {after_cer}")
+                total_after_cers[adaptation_idx] += after_cer
+
+                # improvementを計算する
+                improvement = prev_cer - after_cer
+                logger.info(f"improvement: {improvement}")
+                total_improvements[adaptation_idx] += improvement
 
                 bar.set_postfix(
-                    {"loss": loss.item(), "avg_impr": total_improvement.item() / count if count > 0 else 0.0}
+                    {"avg_impr": total_improvements[adaptation_idx].item() / count if count > 0 else 0.0}
                 )
-                bar.update(_x_len)
 
-                if accum_frame > cfg.train.accum_frame:
-                    for optimizer in optimizers:
-                        optimizer.step()
-                        optimizer.zero_grad()
-                    accum_frame = 0
-
-            # 適応後のCERを計算する
-            after_cer = eval(cfg, model, tokenizer, x, x_len, y, y_len)
-            total_after_cer += after_cer
-            logger.info(f"after_cer: {after_cer}")
-
-            # improvementを計算する
-            improvement = prev_cer - after_cer
-            total_improvement += improvement
-            count += 1
-            logger.info(f"improvement: {improvement}")
-            mlflow.log_metric("improvement", improvement, step=sample_idx)
             mlflow.log_metric(
-                "avg_improvement", total_improvement.item() / count if count > 0 else 0.0, step=sample_idx
+                "avg_prev_cer",
+                total_prev_cer.item() / count if count > 0 else 0.0,
+                step=sample_idx,
             )
-            mlflow.log_metric("avg_prev_cer", total_prev_cer.item() / count if count > 0 else 0.0, step=sample_idx)
-            mlflow.log_metric("avg_after_cer", total_after_cer.item() / count if count > 0 else 0.0, step=sample_idx)
+            for adaptation_idx in range(NUM_ADAPTATION):
+                mlflow.log_metric(
+                    f"{adaptation_idx}th avg_improvement",
+                    total_improvements[adaptation_idx].item() / count if count > 0 else 0.0,
+                    step=sample_idx,
+                )
+
+                mlflow.log_metric(
+                    f"{adaptation_idx}th avg_after_cer",
+                    total_after_cers[adaptation_idx].item() / count if count > 0 else 0.0,
+                    step=sample_idx,
+                )
 
             del model
 

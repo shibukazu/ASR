@@ -20,6 +20,7 @@ model:
   subsampling_stride2: 2
 
 train:
+  num_adaptation: 5
   buffer_size: 50
   optimize:
     lr: 0.000005

@@ -23,6 +23,7 @@ model:
 train:
   buffer_size: 100
   accum_frame: 10
+  num_adaptation: 5
   optimize:
     lr: 0.000005
     weight_decay: 0.000001

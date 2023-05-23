@@ -146,12 +146,14 @@ def main(cfg: DictConfig):
             raise NotImplementedError
         adapter_pretrained_model = DataParallel(adapter_pretrained_model)
 
-        total_curr_improvement = 0.0
+        NUM_ADAPTATION = cfg.train.num_adaptation
         total_curr_prev_cer = 0.0
-        total_curr_after_cer = 0.0
-        total_next_improvement = 0.0
         total_next_prev_cer = 0.0
-        total_next_after_cer = 0.0
+
+        total_curr_improvements = [0.0 for _ in range(NUM_ADAPTATION)]
+        total_curr_after_cers = [0.0 for _ in range(NUM_ADAPTATION)]
+        total_next_improvements = [0.0 for _ in range(NUM_ADAPTATION)]
+        total_next_after_cers = [0.0 for _ in range(NUM_ADAPTATION)]
 
         count = 0
         for sample_idx, (
@@ -202,98 +204,114 @@ def main(cfg: DictConfig):
                 next_y = ys[next_utterance_idx]
                 next_y_len = y_lens[next_utterance_idx]
 
-                # 1つ先の発話でのPRE CERを計算する
-                next_prev_cer = eval(cfg, model, tokenizer, next_x, next_x_len, next_y, next_y_len)
-                total_next_prev_cer += next_prev_cer
-
-                # 現在の発話でAdaptationを行う
                 curr_x = xs[curr_utterance_idx]
                 curr_x_len = x_lens[curr_utterance_idx]
                 curr_y = ys[curr_utterance_idx]
                 curr_y_len = y_lens[curr_utterance_idx]
                 curr_vad = vads[curr_utterance_idx]
 
+                # 1つ先の発話でのPRE CERを計算する
+                next_prev_cer = eval(cfg, model, tokenizer, next_x, next_x_len, next_y, next_y_len)
+                total_next_prev_cer += next_prev_cer
+
                 # [SUB] 比較のために現在の発話でのPRE CERを計算する
                 curr_prev_cer = eval(cfg, model, tokenizer, curr_x, curr_x_len, curr_y, curr_y_len)
                 total_curr_prev_cer += curr_prev_cer
 
-                # [SUB] Adaptationを行う
-                # [SUB] FrameレベルでのAdaptationを行う
-                model.train()
-                buffer_size = cfg.train.buffer_size
-                for frame_idx in range(0, len(curr_x), buffer_size):
-                    _curr_x = curr_x[frame_idx : frame_idx + buffer_size]
-                    _curr_x_len = len(_curr_x)
-                    _curr_vad = curr_vad[frame_idx : frame_idx + buffer_size]
-                    if _curr_x_len < buffer_size:
-                        continue
-                    _curr_subsampled_vad = vad_subsample(
-                        vad_subsample(_curr_vad, cfg.model.subsampling_kernel_size1, cfg.model.subsampling_stride1),
-                        cfg.model.subsampling_kernel_size2,
-                        cfg.model.subsampling_stride2,
+                for adaptation_idx in range(NUM_ADAPTATION):
+                    # [SUB] Adaptationを行う
+                    # [SUB] FrameレベルでのAdaptationを行う
+                    model.train()
+                    buffer_size = cfg.train.buffer_size
+                    for frame_idx in range(0, len(curr_x), buffer_size):
+                        if frame_idx + buffer_size > len(curr_x):
+                            continue
+                        _curr_x = curr_x[frame_idx : frame_idx + buffer_size]
+                        _curr_x_len = len(_curr_x)
+                        _curr_vad = curr_vad[frame_idx : frame_idx + buffer_size]
+                        _curr_subsampled_vad = vad_subsample(
+                            vad_subsample(
+                                _curr_vad, cfg.model.subsampling_kernel_size1, cfg.model.subsampling_stride1
+                            ),
+                            cfg.model.subsampling_kernel_size2,
+                            cfg.model.subsampling_stride2,
+                        )
+                        _curr_subsampled_vad = torch.tensor(_curr_subsampled_vad, dtype=torch.float32)
+                        _curr_subsampled_vad_len = len(_curr_subsampled_vad)
+
+                        curr_loss = forward(
+                            cfg=cfg,
+                            model=model,
+                            x=_curr_x,
+                            x_len=_curr_x_len,
+                            subsampled_vad=_curr_subsampled_vad,
+                            subsampled_vad_len=_curr_subsampled_vad_len,
+                            bce_criterion=bce_criterion,
+                        )
+                        curr_loss.backward()
+                        for optimizer in optimizers:
+                            optimizer.step()
+                            optimizer.zero_grad()
+
+                    # [SUB] 比較のために現在の発話でのAFTER CERを計算する
+                    curr_after_cer = eval(cfg, model, tokenizer, curr_x, curr_x_len, curr_y, curr_y_len)
+                    total_curr_after_cers[adaptation_idx] += curr_after_cer
+
+                    # [SUB] 比較のために現在の発話でのImprovementを計算する
+                    curr_improvement = curr_prev_cer - curr_after_cer
+                    total_curr_improvements[adaptation_idx] += curr_improvement
+
+                    # 1つ先の発話でのAFTER CERを計算する
+                    next_after_cer = eval(cfg, model, tokenizer, next_x, next_x_len, next_y, next_y_len)
+                    total_next_after_cers[adaptation_idx] += next_after_cer
+
+                    # 1つ先の発話でのImprovementを計算する
+                    next_improvement = next_prev_cer - next_after_cer
+                    total_next_improvements[adaptation_idx] += next_improvement
+
+                    bar.set_postfix(
+                        {
+                            "curr_improve": curr_improvement.item(),
+                            "avg_curr_improve": total_curr_improvements[adaptation_idx].item() / count
+                            if count > 0
+                            else 0.0,
+                            "next_improve": next_improvement.item(),
+                            "avg_next_improve": total_next_improvements[adaptation_idx].item() / count
+                            if count > 0
+                            else 0.0,
+                        }
                     )
-                    _curr_subsampled_vad = torch.tensor(_curr_subsampled_vad, dtype=torch.float32)
-                    _curr_subsampled_vad_len = len(_curr_subsampled_vad)
-
-                    curr_loss = forward(
-                        cfg=cfg,
-                        model=model,
-                        x=_curr_x,
-                        x_len=_curr_x_len,
-                        subsampled_vad=_curr_subsampled_vad,
-                        subsampled_vad_len=_curr_subsampled_vad_len,
-                        bce_criterion=bce_criterion,
-                    )
-                    curr_loss.backward()
-                    for optimizer in optimizers:
-                        optimizer.step()
-                        optimizer.zero_grad()
-
-                # [SUB] 比較のために現在の発話でのAFTER CERを計算する
-                curr_after_cer = eval(cfg, model, tokenizer, curr_x, curr_x_len, curr_y, curr_y_len)
-                total_curr_after_cer += curr_after_cer
-
-                # [SUB] 比較のために現在の発話でのImprovementを計算する
-                curr_improvement = curr_prev_cer - curr_after_cer
-                total_curr_improvement += curr_improvement
-
-                # 1つ先の発話でのAFTER CERを計算する
-                next_after_cer = eval(cfg, model, tokenizer, next_x, next_x_len, next_y, next_y_len)
-                total_next_after_cer += next_after_cer
-
-                # 1つ先の発話でのImprovementを計算する
-                next_improvement = next_prev_cer - next_after_cer
-                total_next_improvement += next_improvement
-
-                bar.set_postfix(
-                    {
-                        "curr_improve": curr_improvement.item(),
-                        "avg_curr_improve": total_curr_improvement.item() / count if count > 0 else 0.0,
-                        "next_improve": next_improvement.item(),
-                        "avg_next_improve": total_next_improvement.item() / count if count > 0 else 0.0,
-                    }
-                )
                 bar.update(1)
 
-            mlflow.log_metric(
-                "avg_curr_improvement", total_curr_improvement.item() / count if count > 0 else 0.0, step=sample_idx
-            )
             mlflow.log_metric(
                 "avg_curr_prev_cer", total_curr_prev_cer.item() / count if count > 0 else 0.0, step=sample_idx
             )
             mlflow.log_metric(
-                "avg_curr_after_cer", total_curr_after_cer.item() / count if count > 0 else 0.0, step=sample_idx
-            )
-
-            mlflow.log_metric(
-                "avg_next_improvement", total_next_improvement.item() / count if count > 0 else 0.0, step=sample_idx
-            )
-            mlflow.log_metric(
                 "avg_next_prev_cer", total_next_prev_cer.item() / count if count > 0 else 0.0, step=sample_idx
             )
-            mlflow.log_metric(
-                "avg_necxt_after_cer", total_next_after_cer.item() / count if count > 0 else 0.0, step=sample_idx
-            )
+            for adaptation_idx in range(NUM_ADAPTATION):
+                mlflow.log_metric(
+                    f"{adaptation_idx}th avg_curr_improvement",
+                    total_curr_improvements[adaptation_idx].item() / count if count > 0 else 0.0,
+                    step=sample_idx,
+                )
+
+                mlflow.log_metric(
+                    f"{adaptation_idx}th avg_curr_after_cer",
+                    total_curr_after_cers[adaptation_idx].item() / count if count > 0 else 0.0,
+                    step=sample_idx,
+                )
+
+                mlflow.log_metric(
+                    f"{adaptation_idx}th avg_next_improvement",
+                    total_next_improvements[adaptation_idx].item() / count if count > 0 else 0.0,
+                    step=sample_idx,
+                )
+                mlflow.log_metric(
+                    f"{adaptation_idx}th avg_necxt_after_cer",
+                    total_next_after_cers[adaptation_idx].item() / count if count > 0 else 0.0,
+                    step=sample_idx,
+                )
 
             del model
 
