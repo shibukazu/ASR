@@ -31,9 +31,9 @@ decoder:
 
 train:
   num_epoch: 5
-  batch_sec: 600
-  batch_text_len: 2000
-  accum_sec: 3000
+  batch_sec: 800
+  batch_text_len: 2200
+  accum_sec: 3200
   optimize:
     lr: 0.0005
     weight_decay: 0.000001

@@ -252,7 +252,7 @@ def main(cfg: DictConfig):
                 **base_model_args,
             )
             base_model.load_state_dict(base_model_state)
-            model = base_model
+            model = base_model.to(DEVICE)
         else:
             raise NotImplementedError
 
@@ -301,6 +301,14 @@ def main(cfg: DictConfig):
                     eps=cfg.train.optimize.eps,
                 )
                 optimizers.append(optimizer)
+            vad_ff_optimizer = torch.optim.Adam(
+                model.vad_ff.parameters(),
+                lr=cfg.train.optimize.lr,
+                weight_decay=cfg.train.optimize.weight_decay,
+                betas=(cfg.train.optimize.beta1, cfg.train.optimize.beta2),
+                eps=cfg.train.optimize.eps,
+            )
+            optimizers.append(vad_ff_optimizer)
         else:
             raise NotImplementedError
 

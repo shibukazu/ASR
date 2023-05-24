@@ -147,14 +147,12 @@ def main(cfg: DictConfig):
         adapter_pretrained_model = DataParallel(adapter_pretrained_model)
 
         NUM_ADAPTATION = cfg.train.num_adaptation
-        total_curr_prev_cer = 0.0
-        total_next_prev_cer = 0.0
+        total_baseline_cer = 0.0
 
-        total_curr_improvements = [0.0 for _ in range(NUM_ADAPTATION)]
         total_curr_after_cers = [0.0 for _ in range(NUM_ADAPTATION)]
-        total_next_improvements = [0.0 for _ in range(NUM_ADAPTATION)]
         total_next_after_cers = [0.0 for _ in range(NUM_ADAPTATION)]
 
+        baseline_count = 0
         count = 0
         for sample_idx, (
             _,
@@ -192,8 +190,25 @@ def main(cfg: DictConfig):
             else:
                 raise NotImplementedError
 
+            NUM_UTTERANCES = len(xs)
+
+            # Adaptation前のCERを計算する
+            for utterance_idx in range(NUM_UTTERANCES):
+                baseline_count += 1
+
+                baseline_cer = eval(
+                    cfg,
+                    model,
+                    tokenizer,
+                    xs[utterance_idx],
+                    x_lens[utterance_idx],
+                    ys[utterance_idx],
+                    y_lens[utterance_idx],
+                )
+                total_baseline_cer += baseline_cer
+
             # 1発話ずつAdaptationを行う
-            # 1つ先の発話のCERを計算 -> 現在の発話でAdaptation -> 1つ先の発話のCERを計算 (改善率を計算する)
+            # 現在の発話でAdaptation -> 1つ先の発話のCERを計算 (改善率を計算する)
             num_utterances = len(xs)
             for curr_utterance_idx in range(0, num_utterances - 1):
                 count += 1
@@ -209,14 +224,6 @@ def main(cfg: DictConfig):
                 curr_y = ys[curr_utterance_idx]
                 curr_y_len = y_lens[curr_utterance_idx]
                 curr_vad = vads[curr_utterance_idx]
-
-                # 1つ先の発話でのPRE CERを計算する
-                next_prev_cer = eval(cfg, model, tokenizer, next_x, next_x_len, next_y, next_y_len)
-                total_next_prev_cer += next_prev_cer
-
-                # [SUB] 比較のために現在の発話でのPRE CERを計算する
-                curr_prev_cer = eval(cfg, model, tokenizer, curr_x, curr_x_len, curr_y, curr_y_len)
-                total_curr_prev_cer += curr_prev_cer
 
                 for adaptation_idx in range(NUM_ADAPTATION):
                     # [SUB] Adaptationを行う
@@ -257,58 +264,26 @@ def main(cfg: DictConfig):
                     curr_after_cer = eval(cfg, model, tokenizer, curr_x, curr_x_len, curr_y, curr_y_len)
                     total_curr_after_cers[adaptation_idx] += curr_after_cer
 
-                    # [SUB] 比較のために現在の発話でのImprovementを計算する
-                    curr_improvement = curr_prev_cer - curr_after_cer
-                    total_curr_improvements[adaptation_idx] += curr_improvement
-
                     # 1つ先の発話でのAFTER CERを計算する
                     next_after_cer = eval(cfg, model, tokenizer, next_x, next_x_len, next_y, next_y_len)
                     total_next_after_cers[adaptation_idx] += next_after_cer
 
-                    # 1つ先の発話でのImprovementを計算する
-                    next_improvement = next_prev_cer - next_after_cer
-                    total_next_improvements[adaptation_idx] += next_improvement
-
-                    bar.set_postfix(
-                        {
-                            "curr_improve": curr_improvement.item(),
-                            "avg_curr_improve": total_curr_improvements[adaptation_idx].item() / count
-                            if count > 0
-                            else 0.0,
-                            "next_improve": next_improvement.item(),
-                            "avg_next_improve": total_next_improvements[adaptation_idx].item() / count
-                            if count > 0
-                            else 0.0,
-                        }
-                    )
                 bar.update(1)
 
             mlflow.log_metric(
-                "avg_curr_prev_cer", total_curr_prev_cer.item() / count if count > 0 else 0.0, step=sample_idx
+                "baseline_cer",
+                total_baseline_cer.item() / baseline_count if baseline_count > 0 else 0.0,
+                step=sample_idx,
             )
-            mlflow.log_metric(
-                "avg_next_prev_cer", total_next_prev_cer.item() / count if count > 0 else 0.0, step=sample_idx
-            )
-            for adaptation_idx in range(NUM_ADAPTATION):
-                mlflow.log_metric(
-                    f"{adaptation_idx}th avg_curr_improvement",
-                    total_curr_improvements[adaptation_idx].item() / count if count > 0 else 0.0,
-                    step=sample_idx,
-                )
 
+            for adaptation_idx in range(NUM_ADAPTATION):
                 mlflow.log_metric(
                     f"{adaptation_idx}th avg_curr_after_cer",
                     total_curr_after_cers[adaptation_idx].item() / count if count > 0 else 0.0,
                     step=sample_idx,
                 )
-
                 mlflow.log_metric(
-                    f"{adaptation_idx}th avg_next_improvement",
-                    total_next_improvements[adaptation_idx].item() / count if count > 0 else 0.0,
-                    step=sample_idx,
-                )
-                mlflow.log_metric(
-                    f"{adaptation_idx}th avg_necxt_after_cer",
+                    f"{adaptation_idx}th avg_next_after_cer",
                     total_next_after_cers[adaptation_idx].item() / count if count > 0 else 0.0,
                     step=sample_idx,
                 )

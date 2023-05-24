@@ -13,7 +13,7 @@ tokenizer:
 model:
   name:
     "CausalConformerMultitaskCTCAdapterModel"
-  pretrained_model_path: "./artifacts/ctc_adapter_pretrain/29333dc1ed6d4031809685b57de8744a/artifacts/model_10.pth"
+  pretrained_model_path: "./artifacts/ctc_adapter_pretrain/29333dc1ed6d4031809685b57de8744a/artifacts/model_10.pth" # 
   subsampling_kernel_size1: 3
   subsampling_stride1: 2
   subsampling_kernel_size2: 3
