@@ -5,11 +5,11 @@ hydra:
 dataset:
   name: "CSJ"
   train:
-    json_file_path: "./json/vad/noisy_pretrain_develop_with_subsampled_vad.json"
+    json_file_path: "./json/vad/noisy_pretrain_with_subsampled_vad.json"
   eval:
-    json_file_path: "./json/vad/noisy_pretrain_develop_with_subsampled_vad.json"
+    json_file_path: "./json/vad/noisy_pretrain_eval_with_subsampled_vad.json"
   eval_ref:
-    json_file_path: "./json/vad/noisy_pretrain_develop_with_subsampled_vad.json"
+    json_file_path: "./json/vad/noisy_pretrain_eval_ref_with_subsampled_vad.json"
 
 tokenizer:
   model_file_path: "./vocabs/csj_train_nodup_sp_4096.bpe.model"
@@ -36,10 +36,10 @@ decoder:
   type: "greedy"
 
 train:
-  num_epoch: 20
-  batch_sec: 120
-  batch_text_len: 400
-  accum_sec: 360
+  num_epoch: 5
+  batch_sec: 1000
+  batch_text_len: 3000
+  accum_sec: 3000
   optimize:
     lr: 0.0005
     weight_decay: 0.000001

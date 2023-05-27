@@ -7,6 +7,7 @@ import torch
 from conf import logging_conf
 from ctc_model import (
     CausalConformerMultitaskCTCAdapterModel,
+    CausalConformerMultitaskCTCAfterLNAdapterModel,
     CausalConformerMultitaskCTCLLAdapterModel,
     CausalConformerMultitaskCTCModel,
 )
@@ -225,6 +226,50 @@ def main(cfg: DictConfig):
                 else:
                     param.data = pretrained_model_state[name]
             assert adapter_count == cfg.model.num_adapter_blocks * 2, f"{adapter_count}"
+        elif cfg.model.name == "CausalConformerMultitaskCTCAfterLNAdapterModel":
+            pretrained_model_path = cfg.model.pretrained_model_path
+            with open(pretrained_model_path, "rb") as f:
+                cpt = torch.load(f)
+            pretrained_model_state = cpt["model"]
+            pretrained_model_args = cpt["model_args"]
+            model_args = pretrained_model_args
+            model_args["adapter_hidden_size"] = cfg.model.adapter_hidden_size
+            model_args["num_adapter_blocks"] = cfg.model.num_adapter_blocks
+            model = CausalConformerMultitaskCTCAfterLNAdapterModel(
+                **model_args,
+            ).to(DEVICE)
+            # モデルのロードを行う
+            # 一部のblockをadapter付きブロックに置き換えているため、手動でロードする
+            adapter_count = 0
+            for name, param in tqdm(model.named_parameters()):
+                if name.startswith("encoder.adapter_blocks."):
+                    if ".adapter." in name:
+                        if cfg.model.adapter_init == "identity":
+                            if "weight" in name:
+                                adapter_count += 1
+                                torch.nn.init.eye_(param)
+                            elif "bias" in name:
+                                torch.nn.init.zeros_(param)
+                            else:
+                                raise NotImplementedError
+                        elif cfg.model.adapter_init == "random":
+                            pass
+                        else:
+                            raise NotImplementedError
+                    else:
+                        idx = int(name.split(".")[2])
+                        modified_idx = idx
+                        modified_name = name.replace(f".{idx}.", f".{modified_idx}.")
+                        modified_name = modified_name.replace("adapter_blocks", "conformer_blocks")
+                        param.data = pretrained_model_state[modified_name]
+                elif name.startswith("encoder.conformer_blocks."):
+                    idx = int(name.split(".")[2])
+                    modified_idx = cfg.model.num_adapter_blocks + idx
+                    modified_name = name.replace(f".{idx}.", f".{modified_idx}.")
+                    param.data = pretrained_model_state[modified_name]
+                else:
+                    param.data = pretrained_model_state[name]
+            assert adapter_count == cfg.model.num_adapter_blocks * 2, f"{adapter_count}"
         elif cfg.model.name == "CausalConformerMultitaskCTCLLAdapterModel":
             base_model_path = cfg.model.base_model_path
             with open(base_model_path, "rb") as f:
@@ -252,6 +297,7 @@ def main(cfg: DictConfig):
                 **base_model_args,
             )
             base_model.load_state_dict(base_model_state)
+            model_args = base_model_args
             model = base_model.to(DEVICE)
         else:
             raise NotImplementedError
@@ -259,6 +305,25 @@ def main(cfg: DictConfig):
         model = DataParallel(model).to(DEVICE)
         optimizers = []
         if cfg.model.name == "CausalConformerMultitaskCTCAdapterModel":
+            # adapter専用のoptimizer, schedulerを用意する
+            for block_idx in range(len(model.encoder.adapter_blocks)):
+                optimizer = torch.optim.Adam(
+                    model.encoder.adapter_blocks[block_idx].adapter.parameters(),
+                    lr=cfg.train.optimize.lr,
+                    weight_decay=cfg.train.optimize.weight_decay,
+                    betas=(cfg.train.optimize.beta1, cfg.train.optimize.beta2),
+                    eps=cfg.train.optimize.eps,
+                )
+                optimizers.append(optimizer)
+            vad_ff_optimizer = torch.optim.Adam(
+                model.vad_ff.parameters(),
+                lr=cfg.train.optimize.lr,
+                weight_decay=cfg.train.optimize.weight_decay,
+                betas=(cfg.train.optimize.beta1, cfg.train.optimize.beta2),
+                eps=cfg.train.optimize.eps,
+            )
+            optimizers.append(vad_ff_optimizer)
+        elif cfg.model.name == "CausalConformerMultitaskCTCAfterLNAdapterModel":
             # adapter専用のoptimizer, schedulerを用意する
             for block_idx in range(len(model.encoder.adapter_blocks)):
                 optimizer = torch.optim.Adam(
@@ -289,9 +354,7 @@ def main(cfg: DictConfig):
         elif cfg.model.name == "CausalConformerMultitaskCTCLNAdaptationModel":
             for block_idx in cfg.model.adaptation_block_idxs:
                 parameters = [
-                    p
-                    for n, p in model.encoder.conformer_blocks[block_idx].named_parameters()
-                    if "layer_norm" in n
+                    p for n, p in model.encoder.conformer_blocks[block_idx].named_parameters() if "layer_norm" in n
                 ]
                 optimizer = torch.optim.Adam(
                     parameters,
@@ -381,7 +444,10 @@ def main(cfg: DictConfig):
             logger.info(f"Epoch {i}  ref_improvement: {ref_improvement}")
             mlflow.log_metric("ref_improvement", ref_improvement, step=i)
 
-            if cfg.model.name == "CausalConformerMultitaskCTCAdapterModel":
+            if (
+                cfg.model.name == "CausalConformerMultitaskCTCAdapterModel"
+                or cfg.model.name == "CausalConformerMultitaskCTCAfterLNAdapterModel"
+            ):
                 torch.save(
                     {
                         "model": model.module.state_dict(),
